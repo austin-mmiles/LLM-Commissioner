@@ -1,6 +1,5 @@
 import openai
 import os
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 def generate_recap(team_data):
     prompt = f"""
@@ -10,8 +9,8 @@ def generate_recap(team_data):
     Scores: {team_data['scores']}
     """
     
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
+    response = openai.chat.completions.create(
+        model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}]
     )
     return response.choices[0].message.content.strip()
@@ -24,8 +23,8 @@ def generate_preview(team_data):
     Opponent data: {team_data['matchup']}
     """
     
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
+    response = openai.chat.completions.create(
+        model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}]
     )
     return response.choices[0].message.content.strip()

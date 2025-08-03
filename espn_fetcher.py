@@ -1,7 +1,7 @@
 from espn_api.football import League
 
 def get_team_data(league_id, team_id, week):
-    league = League(league_id=league_id, year=2025)
+    league = League(league_id=league_id, year=2024)
     team = next(t for t in league.teams if t.team_id == int(team_id))
     matchups = league.scoreboard(week)
     return {

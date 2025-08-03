@@ -1,4 +1,4 @@
-mport streamlit as st
+import streamlit as st
 from espn_fetcher import get_team_data
 from gpt_summarizer import generate_recap, generate_preview
 
