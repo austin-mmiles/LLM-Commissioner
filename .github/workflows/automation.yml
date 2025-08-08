@@ -1,0 +1,49 @@
+name: LLM-Commissioner Email Automation
+
+on:
+  # run on a schedule (GitHub uses UTC)
+  schedule:
+    - cron: "0 15 * * MON"   # Mondays 8:00 AM PT (15:00 UTC)*
+    - cron: "0 15 * * THU"   # Thursdays 8:00 AM PT (15:00 UTC)*
+  workflow_dispatch: {}       # allow manual runs from the Actions tab
+  push:
+    paths:
+      - "**/*.py"
+      - "requirements.txt"
+      - ".github/workflows/automation.yml"
+
+jobs:
+  run-automation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SMTP_USER:       ${{ secrets.SMTP_USER }}
+          SMTP_PASS:       ${{ secrets.SMTP_PASS }}
+          FROM_EMAIL:      ${{ secrets.FROM_EMAIL }}
+          # add any league/env vars you need:
+          LEAGUE_ID:       ${{ secrets.LEAGUE_ID }}
+        run: python main.py
