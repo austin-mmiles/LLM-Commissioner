@@ -52,8 +52,8 @@ jobs:
         env:
           SMTP_USER:  ${{ secrets.SMTP_USER }}
           SMTP_PASS:  ${{ secrets.SMTP_PASS }}
-          TEST_EMAIL: ${{ secrets.TEST_EMAIL }} # add this secret
-          SMTP_HOST:  ${{ secrets.SMTP_HOST }}  # optional; defaults to Gmail
-          SMTP_PORT:  ${{ secrets.SMTP_PORT }}  # optional
+          TEST_EMAIL: ${{ secrets.TEST_EMAIL || secrets.SMTP_USER }}
+          SMTP_HOST:  ${{ secrets.SMTP_HOST || 'smtp.gmail.com' }}
+          SMTP_PORT:  ${{ secrets.SMTP_PORT || '465' }}
         run: python test_email.py
 
