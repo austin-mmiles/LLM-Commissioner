@@ -10,6 +10,7 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))  # 465=SSL, 587=STARTTLS
 SENDER = os.environ["SMTP_USER"]
 PASS = os.environ["SMTP_PASS"]
 RECIP = os.getenv("TEST_EMAIL", SENDER)
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 
 def send_test():
     msg = MIMEMultipart("alternative")
