@@ -25,7 +25,7 @@ def send_test():
     recap = gpt_summarizer.generate_recap(team_data)
 
     # Make sure it's a string
-recap = recap if isinstance(recap, str) else str(recap)
+    recap = recap if isinstance(recap, str) else str(recap)
 
 def recap_as_html(content: str) -> str:
     looks_like_html = ("<" in content and ">" in content) or content.strip().lower().startswith("<html")
