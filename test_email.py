@@ -21,8 +21,8 @@ def send_test():
     team_id = 7
     week = 16
 
-    team_data = espn_fetcher.get_team_data(league_id, team_id, week)
-    recap = gpt_summarizer.generate_recap(team_data)
+    team_data = get_team_data(league_id, team_id, week)
+    recap = generate_recap(team_data)
 
     # Make sure it's a string
     recap = recap if isinstance(recap, str) else str(recap)
