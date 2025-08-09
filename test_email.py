@@ -1,6 +1,9 @@
 import os, ssl, smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from gpt_summarizer import generate_recap
+from espn_fetcher import get_team_data
+import html as _html
 
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))  # 465=SSL, 587=STARTTLS
@@ -14,11 +17,30 @@ def send_test():
     msg["From"] = SENDER
     msg["To"] = RECIP
 
-    text = "This is a plain-text test email from GitHub Actions."
-    html = """<html><body>
-              <h2>LLM-Commissioner</h2>
-              <p>This is a <b>HTML</b> test email from GitHub Actions.</p>
-              </body></html>"""
+    league_id = 97124817
+    team_id = 7
+    week = 16
+
+    team_data = espn_fetcher.get_team_data(league_id, team_id, week)
+    recap = gpt_summarizer.generate_recap(team_data)
+
+    # Make sure it's a string
+recap = recap if isinstance(recap, str) else str(recap)
+
+def recap_as_html(content: str) -> str:
+    looks_like_html = ("<" in content and ">" in content) or content.strip().lower().startswith("<html")
+    if looks_like_html:
+        return content
+    # Escape and keep newlines
+    return f"<div style='white-space:pre-wrap'>{_html.escape(content)}</div>"
+
+    text = f"LLM-Commissioner Recap\n\n{recap}"
+    html = f"""<html><body>
+    <h2>LLM-Commissioner</h2>
+    {recap_as_html(recap)}
+    </body></html>"""
+
+    # Assuming msg is a MIMEMultipart("alternative")
     msg.attach(MIMEText(text, "plain"))
     msg.attach(MIMEText(html, "html"))
 
