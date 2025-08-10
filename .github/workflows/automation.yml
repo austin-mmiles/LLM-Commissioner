@@ -50,6 +50,7 @@ jobs:
 
       - name: Run email smoke test
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SMTP_USER:  ${{ secrets.SMTP_USER }}
           SMTP_PASS:  ${{ secrets.SMTP_PASS }}
           TEST_EMAIL: ${{ secrets.TEST_EMAIL || secrets.SMTP_USER }}
