@@ -10,8 +10,7 @@ week = st.number_input("Week Number", min_value=1, max_value=17, step=1)
 year = st.number_input("Year", min_value=2000, max_value=2025, step=1, value=2024)
 
 if st.button("Generate Report"):
-    matchup_values = get_matchup_starters(league_id, year, week, team_id)
-    recap = generate_recap(team_data)
+    recap = generate_recap(league_id, year, week, team_id)
     #preview = generate_preview(team_data)
 
     st.subheader("Weekly Recap")
