@@ -1,6 +1,6 @@
 import streamlit as st
 from espn_fetcher import get_matchup_starters
-from gpt_summarizer import generate_recap, generate_preview
+from gpt_summarizer import generate_recap
 
 st.title("Fantasy Football AI Recap & Preview")
 
