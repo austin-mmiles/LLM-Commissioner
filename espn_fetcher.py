@@ -5,6 +5,11 @@ def get_matchup_starters(league_id: int, year: int, week: int, team_id: int):
     Returns the matchup score plus starters (name, slot, points) for both teams
     in the specified team's matchup for the given week.
     """
+    league_id = int(league_id)
+    year = int(year)
+    week = int(week)
+    team_id = int(team_id)
+    
     league = League(league_id=league_id, year=year)
     box_scores = league.box_scores(week=week)
 
