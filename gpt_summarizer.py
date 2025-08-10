@@ -1,88 +1,220 @@
 # gpt_summarizer.py
-# Standalone: fetches matchup data from ESPN and generates an advanced recap via OpenAI.
-
-import espn_fetcher
 import os
+import random
+from typing import List, Dict, Any
 from openai import OpenAI
-from typing import Any, Dict, List
-import hashlib
-import streamlit as st
 
-os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+# ====== Model / Client ======
+MODEL = os.getenv("OPENAI_MODEL", "gpt-5.1-mini")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def generate_recap(league_id: int, year: int, week: int, team_id: int) -> str:
+# ====== Style Configuration ======
+COMEDY_PERSONAS = [
+    "Shane Gillis-style barstool riffing (blue-collar, deadpan, confident)",
+    "Theo Von-style tall tales and odd metaphors (Southern porch energy)",
+    "Trevor Wallace-style internet-native roast (fast, punchy, meme-aware)",
+]
+# For safety & brand tone—funny, a little spicy, not hateful or cruel.
+GUARDRAILS = """
+Boundaries:
+- Be witty, irreverent, and lightly roasty, but avoid slurs, hate, or cruelty.
+- No personal attacks on real people outside the fantasy context.
+- Keep it PG-13 to light R for humor; no explicit sexual content.
+- Punch up by mocking decisions, luck, or fantasy chaos—not identities.
+"""
+
+STYLE_PRIMER = f"""
+You are a seasoned fantasy-football humor columnist. Blend sharp analysis with
+stand-up-comedy delivery. Think: {', '.join(COMEDY_PERSONAS)}.
+
+Voice & Rhythm:
+- Cold open: one-liner hook or quick roast.
+- Micro-headings: "Turning Point", "Studs & Duds", "Takeaway".
+- Use 1–2 vivid analogies/metaphors. Sprinkle 1 pop-culture riff if apt.
+- Name/Team Puns: weave 1–3 tasteful puns on player/team names.
+- Be specific: cite player lines or key moments that swung the matchup.
+- Tight ending: single-line takeaway with a wink.
+
+{GUARDRAILS}
+
+Length:
+- ~150–220 words per recap.
+
+Formatting:
+- Use markdown with short sections, list bullets when helpful.
+"""
+
+# ====== Lightweight Name/Team Puns ======
+# Seed dictionary for common/funny transforms; you can expand this over time.
+PUN_SEEDS = {
+    "Patrick Mahomes": ["Mahomes Alone", "Patty Ice", "Ma-thrones"],
+    "Travis Kelce": ["Kelce Grammer", "Travvy Patty"],
+    "Lamar Jackson": ["LaMario Kart", "Action Jackson"],
+    "Jalen Hurts": ["Hurts So Good", "Jalen and the Argonauts"],
+    "Tua Tagovailoa": ["Tua Legit to Quit", "Tua Infinity and Beyond"],
+    "Josh Allen": ["Allen Wrench", "The Joshwash"],
+    "Justin Jefferson": ["Jet Fuel", "JJ the Jet Plane"],
+    "Amon-Ra St. Brown": ["The Sun God Tax", "Saint Touchdown"],
+    "Christian McCaffrey": ["CMC Hammer", "Run CMC"],
+    "Tyreek Hill": ["TyFreak", "Cheetah Speed"],
+    "Dak Prescott": ["Dakstreet Boys", "Dak Attack"],
+    "Joe Burrow": ["Joe Shiesty", "Brrr-row"],
+    "Brock Purdy": ["Mr. Irrelevant No More", "Brock & Roll"],
+    "Bijan Robinson": ["Bijan Mustardson", "Bijan Bistro"],
+    "Cooper Kupp": ["Red Zone Barista", "Kupp Runneth Over"],
+    "Stefon Diggs": ["Diggs Dug", "Stefon the Gas"],
+    "Derrick Henry": ["King Henry", "The Heisman Truck"],
+    "CeeDee Lamb": ["Seedy Business", "Rack of Lamb"],
+    "Deebo Samuel": ["Deebo Bike", "Debozer"],
+}
+
+TEAM_PUN_SUFFIXES = ["Nation", "Industrial Complex", "Appreciation Club", "Support Group", "Rehabilitation Center"]
+
+POP_CULTURE_BANK = [
+    "a Barbenheimer double feature",
+    "a Fortnite kid cranking 90s",
+    "a Netflix password crackdown",
+    "a crypto rugpull at 3 AM",
+    "a surprise Taylor Swift album drop",
+    "a ChatGPT prompt spiral",
+    "Mario Kart’s blue shell on lap 3",
+    "a Costco sample stampede",
+    "an Apple keynote ‘one more thing’",
+]
+
+def _maybe_pun_name(name: str) -> str:
+    base = name.strip()
+    # If we have a seed pun, pick one ~60% of the time.
+    if base in PUN_SEEDS and random.random() < 0.6:
+        return random.choice(PUN_SEEDS[base])
+    # Generic playful transforms
+    parts = base.split()
+    if not parts:
+        return base
+    first = parts[0]
+    # Add playful suffix or alliteration
+    options = [
+        f"{first} 'The {random.choice(['Nuke','Engine','Magnet','Menace','Metronome'])]}' {parts[-1]}",
+        f"{first}{parts[-1][0] if parts[-1] else ''}-zilla",
+        f"{first}-nator",
+    ]
+    return random.choice(options)
+
+def _team_pun(name: str) -> str:
+    name = name or "Team"
+    if random.random() < 0.5:
+        return f"{name} {random.choice(TEAM_PUN_SUFFIXES)}"
+    return name
+
+def _pick_pop_culture_ref() -> str:
+    return random.choice(POP_CULTURE_BANK)
+
+def _top_three(starters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # Sort by points descending and take top 3
+    return sorted(starters, key=lambda x: (x.get("points") or 0), reverse=True)[:3]
+
+def _format_player_list(players: List[Dict[str, Any]]) -> str:
+    out = []
+    for p in players:
+        name = p.get("name", "Unknown")
+        slot = p.get("slot", "")
+        pts = p.get("points", 0)
+        out.append(f"- {name} ({slot}) — {pts} pts")
+    return "\n".join(out) if out else "- (no notable starters found)"
+
+def _craft_prompt(matchup: Dict[str, Any]) -> str:
+    m = matchup["matchup"]
+    home = m["home_team"]
+    away = m["away_team"]
+    home_score = m["home_score"]
+    away_score = m["away_score"]
+    winner = m.get("winner", "TBD")
+    margin = m.get("margin", 0)
+
+    home_pun = _team_pun(home)
+    away_pun = _team_pun(away)
+
+    top_home = _top_three(matchup.get("home_starters", []))
+    top_away = _top_three(matchup.get("away_starters", []))
+
+    # Pun some names inline for flavor (don’t overdo it)
+    def enrich(players):
+        enriched = []
+        for p in players:
+            newp = dict(p)
+            if random.random() < 0.5:
+                newp["alt"] = _maybe_pun_name(p.get("name", ""))
+            enriched.append(newp)
+        return enriched
+
+    top_home = enrich(top_home)
+    top_away = enrich(top_away)
+
+    home_top_md = _format_player_list(top_home)
+    away_top_md = _format_player_list(top_away)
+
+    culture = _pick_pop_culture_ref()
+    persona = random.choice(COMEDY_PERSONAS)
+
+    # Provide structured facts + comedic levers to the model
+    user_content = f"""
+FACTS:
+- Matchup: {home} vs {away}
+- Scores: {home} {home_score} — {away} {away_score}
+- Winner: {winner}
+- Margin: {margin}
+
+HOME TOP STARTERS (flair may include alt pun names):
+{home_top_md}
+
+AWAY TOP STARTERS (flair may include alt pun names):
+{away_top_md}
+
+Creative levers you can use:
+- Persona flavor: {persona}
+- One pop-culture nod: {culture}
+- Use 1–3 playful puns on team/player names (from the lists above, or invent tasteful ones).
+- Keep it specific: reference at least one decisive play or performance from the lists.
+
+Now write a markdown recap with:
+- A quick cold-open zinger (1 sentence).
+- **Turning Point**: one short paragraph (1–3 sentences).
+- **Studs & Duds**: 3–6 bullets total (mix of praise/roast).
+- **Takeaway**: one single-line verdict.
+- ~150–220 words total.
+"""
+
+    return user_content
+
+# ====== Public API ======
+
+def generate_matchup_recap(matchup_dict: Dict[str, Any]) -> str:
     """
-    Fetch the matchup from ESPN and return a witty, advanced recap.
-
-    Args:
-        league_id: ESPN league ID
-        year: season year
-        week: week number
-        team_id: ESPN team ID
-
-    Returns:
-        str: recap text
+    Returns a single spicy, funny, insightful recap in markdown (~150–220 words).
     """
-    team_data = espn_fetcher.get_matchup_starters(league_id, year, week, team_id)
-
-    prompt = _build_prompt(team_data)
-    #client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-    #client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    messages = [
+        {"role": "system", "content": STYLE_PRIMER},
+        {"role": "user", "content": _craft_prompt(matchup_dict)},
+    ]
 
     resp = client.chat.completions.create(
-        model="gpt-4o-mini",  # or your preferred model
-        messages=[
-            {"role": "system", "content": "You are a witty, insightful fantasy football beat writer."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.8,
-        max_tokens=600
+        model=MODEL,
+        messages=messages,
+        temperature=0.95,     # let it cook
+        top_p=0.9,
+        frequency_penalty=0.3,
+        presence_penalty=0.2,
     )
-
     return resp.choices[0].message.content.strip()
 
-
-# ---------------- Internals ----------------
-
-def _build_prompt(team_data: Dict[str, Any]) -> str:
-    m = team_data.get("matchup", {})
-    home_starters = team_data.get("home_starters", [])
-    away_starters = team_data.get("away_starters", [])
-
-    return f"""
-Write a creative, snarky, and intelligent fantasy football recap for this matchup.
-
-Week: {team_data.get("week")}
-Home: {m.get("home_team")} scored {m.get("home_score")} points
-Away: {m.get("away_team")} scored {m.get("away_score")} points
-Winner: {m.get("winner")}
-Margin: {m.get("margin")}
-
-Home starters:
-{_format_players(home_starters)}
-
-Away starters:
-{_format_players(away_starters)}
-
-Rules:
-- Start with a strong lead sentence that hooks the reader.
-- Include 2–3 short paragraphs mixing stats and colorful commentary.
-- Mention standout players and key performances.
-- End with a witty one-line kicker.
-- Make it rated R, snarky, add insults.
-- Limit to ~300 words.
-    """.strip()
-
-
-def _format_players(players: List[Dict[str, Any]]) -> str:
-    return "\n".join(
-        f"- {p.get('name')} ({p.get('slot')}): {p.get('points')} pts"
-        for p in players
-    )
-
-
-# Optional: stable IDs if you need them later
-def _stable_id(s: str) -> int:
-    h = hashlib.sha1(s.encode("utf-8")).hexdigest()
-    return int(h[-8:], 16)
+def generate_week_recap(matchups: List[Dict[str, Any]], *, league_id: int, year: int, week: int) -> str:
+    """
+    Builds a single markdown doc for all matchups in a week.
+    """
+    parts = [f"# Weekly Recap – League {league_id}, {year} Week {week}\n"]
+    random.seed(f"{league_id}-{year}-{week}")  # stable-ish jokes per run
+    for i, m in enumerate(matchups, start=1):
+        title = f"## Matchup {i}: {m['matchup']['home_team']} vs {m['matchup']['away_team']}"
+        body = generate_matchup_recap(m)
+        parts.append(f"{title}\n\n{body}\n")
+    return "\n---\n".join(parts)
