@@ -12,7 +12,7 @@ def main():
     #league_id = os.getenv("LEAGUE_ID")
     #print(f"Sent emails for league {league_id}")
     #print(get_matchup_starters(league_id, 2021, 17, 11))
-    recap = generate_recap(league_id=97124817, year=2024, week=1, team_id=7)
+    recap = generate_recap(league_id=97124817, year=2020, week=16, team_id=10)
     print(recap)
 
 
