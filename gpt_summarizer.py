@@ -6,7 +6,9 @@ import os
 from openai import OpenAI
 from typing import Any, Dict, List
 import hashlib
+import streamlit as st
 
+os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
 
 def generate_recap(league_id: int, year: int, week: int, team_id: int) -> str:
     """
@@ -25,7 +27,8 @@ def generate_recap(league_id: int, year: int, week: int, team_id: int) -> str:
 
     prompt = _build_prompt(team_data)
     #client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    #client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
     resp = client.chat.completions.create(
         model="gpt-4o-mini",  # or your preferred model
