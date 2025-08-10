@@ -1,63 +1,50 @@
+from typing import List, Dict, Any
 from espn_api.football import League
 
-def get_matchup_starters(league_id: int, year: int, week: int, team_id: int):
+def get_week_matchups(league_id: int, year: int, week: int) -> List[Dict[str, Any]]:
     """
-    Returns the matchup score plus starters (name, slot, points) for both teams
-    in the specified team's matchup for the given week.
+    Returns a list of matchup dicts for the given week:
+    - matchup: home/away team names, scores, winner, margin
+    - home_starters / away_starters: [{name, slot, points}, ...]
+    NOTE: This version does NOT require ESPN_S2 or SWID. It will only work for
+    leagues that are public or otherwise readable without auth.
     """
-    league_id = int(league_id)
-    year = int(year)
-    week = int(week)
-    team_id = int(team_id)
-    
     league = League(league_id=league_id, year=year)
-    box_scores = league.box_scores(week=week)
 
-    # find the box score that includes this team_id
-    target = None
-    for bx in box_scores:
-        if bx.home_team.team_id == team_id or bx.away_team.team_id == team_id:
-            target = bx
-            break
-    if target is None:
-        raise ValueError(f"No matchup found for team_id {team_id} in week {week}.")
+    boxes = league.box_scores(week)
+    matchups: List[Dict[str, Any]] = []
 
-    # helper: filter to starters (exclude Bench/IR)
     def starters(lineup):
         return [
-            {
-                "name": p.name,
-                "slot": p.slot_position,  # e.g., QB/RB/WR/TE/FLEX/DST/K
-                "points": round(float(getattr(p, "points", 0) or 0), 2),
-            }
+            {"name": p.name, "slot": p.slot_position, "points": round(p.points or 0, 2)}
             for p in lineup
-            if str(p.slot_position).lower() not in ("bench", "ir")
+            if p.slot_position not in ("BE", "IR")
         ]
 
-    home = target.home_team
-    away = target.away_team
+    for b in boxes:
+        home = b.home_team
+        away = b.away_team
+        home_name = getattr(home, "team_name", "TBD")
+        away_name = getattr(away, "team_name", "TBD")
+        home_score = round(b.home_score or 0, 2)
+        away_score = round(b.away_score or 0, 2)
 
-    home_starters = starters(target.home_lineup)
-    away_starters = starters(target.away_lineup)
+        m = {
+            "week": week,
+            "matchup": {
+                "home_team": home_name,
+                "home_score": home_score,
+                "away_team": away_name,
+                "away_score": away_score,
+                "margin": round(home_score - away_score, 2),
+            },
+            "home_starters": starters(b.home_lineup),
+            "away_starters": starters(b.away_lineup),
+        }
 
-    home_score = round(float(target.home_score or 0), 2)
-    away_score = round(float(target.away_score or 0), 2)
+        if home_score != away_score:
+            m["matchup"]["winner"] = home_name if home_score > away_score else away_name
 
-    return {
-        "week": week,
-        "matchup": {
-            "home_team": home.team_name,
-            "home_score": home_score,
-            "away_team": away.team_name,
-            "away_score": away_score,
-            "margin": round(home_score - away_score, 2),
-            "winner": (
-                home.team_name if home_score > away_score
-                else away.team_name if away_score > home_score
-                else "Tie"
-            ),
-        },
-        "home_starters": home_starters,
-        "away_starters": away_starters,
-    }
+        matchups.append(m)
 
+    return matchups
