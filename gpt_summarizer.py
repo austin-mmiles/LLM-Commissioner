@@ -196,10 +196,6 @@ def generate_matchup_recap(matchup_dict: Dict[str, Any]) -> str:
     resp = client.chat.completions.create(
         model=MODEL,
         messages=messages,
-        temperature=0.95,     # let it cook
-        top_p=0.9,
-        frequency_penalty=0.3,
-        presence_penalty=0.2,
     )
     return resp.choices[0].message.content.strip()
 
