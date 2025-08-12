@@ -1,6 +1,10 @@
 # app.py
 import os
 import traceback
+
+os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "poll"
+os.environ["STREAMLIT_SERVER_RUN_ON_SAVE"] = "false"
+
 import streamlit as st
 
 os.environ["STREAMLIT_SERVER_RUN_ON_SAVE"] = "false"
