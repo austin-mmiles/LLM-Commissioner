@@ -4,7 +4,7 @@ import traceback
 import streamlit as st
 
 st.set_page_config(page_title="LLM Commissioner", page_icon="🏈", layout="wide")
-st.title("LLM Commissioner – Weekly Recaps")
+st.title("Fantasy Football Commissioner – Weekly Recaps")
 
 # -------------------- Secrets/env bootstrap --------------------
 def _maybe_env_from_secrets(key: str):
