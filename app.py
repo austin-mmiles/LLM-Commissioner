@@ -3,6 +3,7 @@ import os
 import traceback
 import streamlit as st
 
+os.environ["STREAMLIT_SERVER_RUN_ON_SAVE"] = "false"
 st.set_page_config(page_title="LLM Commissioner", page_icon="🏈", layout="wide")
 st.title("Fantasy Football Commissioner – Weekly Recaps")
 
