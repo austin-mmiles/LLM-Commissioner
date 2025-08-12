@@ -42,4 +42,3 @@ def _need_openai() -> bool:
     return False
 
 col1, col2, col3 = st.columns(3)
-with
