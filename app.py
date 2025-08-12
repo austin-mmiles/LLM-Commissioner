@@ -1,9 +1,52 @@
+# app.py
+import os
+import traceback
 import streamlit as st
 from espn_fetcher import get_week_matchups
 from gpt_summarizer import generate_week_recap
 
+# ---------- Secrets/env bootstrap ----------
+def _maybe_env_from_secrets(key: str):
+    try:
+        if key in st.secrets and not os.getenv(key):
+            os.environ[key] = str(st.secrets[key])
+    except Exception:
+        pass
+
+for _k in ("OPENAI_API_KEY", "ESPN_S2", "SWID"):
+    _maybe_env_from_secrets(_k)
+
+# ---------- Page ----------
 st.set_page_config(page_title="LLM Commissioner", page_icon="🏈", layout="wide")
 st.title("LLM Commissioner – Weekly Recaps")
+
+with st.sidebar:
+    st.header("Credentials")
+    st.caption("Set these if not already provided via Environment or Streamlit Secrets.")
+    _openai = st.text_input("OPENAI_API_KEY", value=os.getenv("OPENAI_API_KEY", ""), type="password")
+    _s2 = st.text_input("ESPN_S2 (optional)", value=os.getenv("ESPN_S2", ""), type="password")
+    _swid = st.text_input("SWID (optional)", value=os.getenv("SWID", ""), type="password")
+
+    if st.button("Save Credentials"):
+        if _openai:
+            os.environ["OPENAI_API_KEY"] = _openai
+        if _s2:
+            os.environ["ESPN_S2"] = _s2
+        if _swid:
+            os.environ["SWID"] = _swid
+        st.success("Saved for this session.")
+
+def _check_prereqs() -> bool:
+    if not os.getenv("OPENAI_API_KEY"):
+        st.error("Missing **OPENAI_API_KEY** — add it in the sidebar or Streamlit Secrets.")
+        return False
+
+    if not os.getenv("ESPN_S2") or not os.getenv("SWID"):
+        st.warning(
+            "ESPN_S2 and/or SWID are missing — public leagues may still work, "
+            "but private leagues will fail to fetch data."
+        )
+    return True
 
 col1, col2, col3 = st.columns(3)
 with col1:
@@ -15,25 +58,52 @@ with col3:
 
 st.caption("No team selection needed — we’ll summarize every matchup this week.")
 
-if st.button("Generate Weekly Recap"):
+def _render(text: str):
+    if "<" in text and ">" in text:
+        st.components.v1.html(text, height=900, scrolling=True)
+    else:
+        st.markdown(text)
+
+if st.button("Generate Weekly Recap", type="primary"):
     if not league_id or not year or not week:
         st.error("Please fill in League ID, Year, and Week.")
-    else:
-        with st.spinner("Pulling ESPN data and writing recaps…"):
-            try:
-                matchups = get_week_matchups(int(league_id), int(year), int(week))
-            except Exception as e:
-                st.exception(e)
-                st.stop()
+        st.stop()
 
-            if not matchups:
-                st.warning("No matchups found for that week.")
-            else:
-                recap_md = generate_week_recap(matchups, league_id=int(league_id), year=int(year), week=int(week))
-                st.markdown(recap_md)
-                st.download_button(
-                    "Download Recap (Markdown)",
-                    data=recap_md.encode("utf-8"),
-                    file_name=f"weekly_recap_{league_id}_{year}_w{week}.md",
-                    mime="text/markdown",
+    if not _check_prereqs():
+        st.stop()
+
+    with st.spinner("Pulling ESPN data and writing recaps…"):
+        try:
+            matchups = get_week_matchups(int(league_id), int(year), int(week))
+        except Exception as e:
+            st.error("Failed while fetching ESPN data.")
+            with st.expander("Error details"):
+                st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
+            st.stop()
+
+        if not matchups:
+            st.warning("No matchups found for that week. Double-check league/week inputs.")
+            st.stop()
+
+        try:
+            try:
+                recap_md = generate_week_recap(
+                    matchups, league_id=int(league_id), year=int(year), week=int(week)
                 )
+            except TypeError:
+                recap_md = generate_week_recap(matchups)
+        except Exception as e:
+            st.error("LLM recap generation failed.")
+            with st.expander("Error details"):
+                st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
+            st.stop()
+
+    st.success("Recap generated!")
+    _render(recap_md)
+
+    st.download_button(
+        "Download Recap (Markdown)",
+        data=(recap_md or "").encode("utf-8"),
+        file_name=f"weekly_recap_{league_id}_{year}_w{week}.md",
+        mime="text/markdown",
+    )
