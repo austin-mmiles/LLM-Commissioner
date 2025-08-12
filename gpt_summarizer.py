@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 from openai import OpenAI
 
 # ====== Model / Client ======
-MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ====== Style Configuration ======
