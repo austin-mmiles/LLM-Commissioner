@@ -6,6 +6,7 @@ import streamlit as st
 os.environ["STREAMLIT_SERVER_RUN_ON_SAVE"] = "false"
 st.set_page_config(page_title="LLM Commissioner", page_icon="🏈", layout="wide")
 st.title("Fantasy Football Commissioner – Weekly Recaps")
+st.cache_data.clear()
 
 # -------------------- Secrets/env bootstrap --------------------
 def _maybe_env_from_secrets(key: str):
@@ -78,7 +79,7 @@ def _render(text: str):
     else:
         st.markdown(text)
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=1)
 def _fetch_matchups_cached(_league_id: int, _year: int, _week: int):
     return get_week_matchups(_league_id, _year, _week)
 
