@@ -14,14 +14,6 @@ COMEDY_PERSONAS = [
     "Theo Von-style tall tales and odd metaphors (Southern porch energy)",
     "Trevor Wallace-style internet-native roast (fast, punchy, meme-aware)",
 ]
-# For safety & brand tone—funny, a little spicy, not hateful or cruel.
-GUARDRAILS = """
-Boundaries:
-- Be witty, irreverent, and lightly roasty, but avoid slurs, hate, or cruelty.
-- No personal attacks on real people outside the fantasy context.
-- Keep it PG-13 to light R for humor; no explicit sexual content.
-- Punch up by mocking decisions, luck, or fantasy chaos—not identities.
-"""
 
 STYLE_PRIMER = f"""
 You are a seasoned fantasy-football humor columnist. Blend sharp analysis with
@@ -34,8 +26,6 @@ Voice & Rhythm:
 - Name/Team Puns: weave 1–3 tasteful puns on player/team names.
 - Be specific: cite player lines or key moments that swung the matchup.
 - Tight ending: single-line takeaway with a wink.
-
-{GUARDRAILS}
 
 Length:
 - ~150–220 words per recap.
@@ -84,18 +74,24 @@ POP_CULTURE_BANK = [
 
 def _maybe_pun_name(name: str) -> str:
     base = name.strip()
+    if not base:
+        return name
+
     # If we have a seed pun, pick one ~60% of the time.
     if base in PUN_SEEDS and random.random() < 0.6:
         return random.choice(PUN_SEEDS[base])
-    # Generic playful transforms
+
     parts = base.split()
-    if not parts:
-        return base
     first = parts[0]
-    # Add playful suffix or alliteration
+    last = parts[-1] if len(parts) > 1 else ""
+
+    nick_bank = ["Nuke", "Engine", "Magnet", "Menace", "Metronome"]
+
     options = [
-        f"{first} 'The {random.choice(['Nuke','Engine','Magnet','Menace','Metronome'])]}' {parts[-1]}",
-        f"{first}{parts[-1][0] if parts[-1] else ''}-zilla",
+        # e.g., "Patrick 'The Nuke' Mahomes" (last may be empty for single names)
+        f"{first} 'The {random.choice(nick_bank)}' {last}".strip(),
+        # e.g., "PatrickM-zilla" when last exists
+        f"{first}{(last[0] if last else '')}-zilla",
         f"{first}-nator",
     ]
     return random.choice(options)
