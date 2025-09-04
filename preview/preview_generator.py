@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Any
 
@@ -18,7 +19,7 @@ class TeamMeta:
     team_id: int
     team_name: str
     record: str
-    logo_url: str  # kept for compatibility, but NOT used in output
+    logo_url: str  # kept for compatibility, not used in output
     points_for: float
     points_against: float
     streak: str
@@ -71,8 +72,8 @@ def _get_week_pairs(league: League, week: int) -> List[Tuple[int, int]]:
 
 def _is_starter_slot(slot_value: Any) -> bool:
     """
-    Treat only 'BE' (bench) as non-starter per your requirement.
-    Everything else (including FLEX, IR, etc) counts as starting for projections.
+    Treat only 'BE' (bench) as non-starter.
+    Everything else (including FLEX/IR/etc.) counts as starting for projections.
     """
     try:
         return str(slot_value).upper() != "BE"
@@ -104,10 +105,8 @@ def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dic
                 continue
 
             slot = getattr(p, "slot_position", getattr(p, "position", ""))
-            is_starter = _is_starter_slot(slot)
-            if not is_starter:
-                # 🚫 BENCH EXCLUDED COMPLETELY
-                continue
+            if not _is_starter_slot(slot):
+                continue  # 🚫 BENCH EXCLUDED COMPLETELY
 
             starters.append(PlayerProj(
                 player_id=str(getattr(p, "playerId", getattr(p, "id", "")) or ""),
@@ -131,7 +130,7 @@ def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dic
 
 
 # ===============================
-# Build "cards" for UI + (hybrid LLM)
+# Build "cards" for UI + quotes
 # ===============================
 def build_weekly_preview_cards(
     league_id: int,
@@ -149,7 +148,7 @@ def build_weekly_preview_cards(
         h = _get_team_week_projection(league, week, home_id, meta)
         a = _get_team_week_projection(league, week, away_id, meta)
 
-        # ✅ Edge & featured strictly from STARTERS ONLY (bench excluded above)
+        # ✅ Edge & featured strictly from STARTERS ONLY
         margin = round(h.projected_points - a.projected_points, 2)
         favorite = h if margin >= 0 else a
         edge = abs(margin)
@@ -202,7 +201,7 @@ def _openai_client():
     return OpenAI(api_key=api_key)
 
 def _default_model() -> str:
-    # Keep this small/fast; we only need short quotes + a closer.
+    # Small/fast; we only need short quotes + a closer.
     return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 def _projection_source() -> str:
@@ -210,28 +209,28 @@ def _projection_source() -> str:
 
 
 # ===============================
-# Fallback quote pool (varied styles)
+# Fallback quote pool (TEXT ONLY — no attribution/punctuation)
 # ===============================
 _FALLBACK_QUOTES = [
-    '\"We just need clean execution and a next-play mindset ,\" The {TEAM} coach says.',
-    '\"Control the line, protect the rock, finish the drive ,\" The {TEAM} coach says.',
-    '\"Eyes up, hands strong, and we’ll let the scoreboard do the talking ,\" The {TEAM} coach says.',
-    '\"Respect every snap and keep the pedal down ,\" The {TEAM} coach says.',
-    '\"Fast start, clean finish — that’s the recipe ,\" The {TEAM} coach says.',
-    '\"Trust the read, trust the teammate, trust the plan ,\" The {TEAM} coach says.',
-    '\"Play smart, play physical, play together ,\" The {TEAM} coach says.',
-    '\"Win situations — third down, red zone, two-minute — and you win the game ,\" The {TEAM} coach says.',
-    '\"Stack good plays, stack good quarters, stack a win ,\" The {TEAM} coach says.',
-    '\"No hero ball — just do your job and the big plays come ,\" The {TEAM} coach says.',
-    '\"Tempo, toughness, and takeaways — that’s our identity ,\" The {TEAM} coach says.',
-    '\"Be the hammer, not the nail ,\" The {TEAM} coach says.',
-    '\" details matter — ball security and discipline travel ,\" The {TEAM} coach says.',
-    '\"We want to be the last team still swinging ,\" The {TEAM} coach says.',
+    "We just need clean execution and a next-play mindset",
+    "Control the line, protect the rock, finish the drive",
+    "Eyes up, hands strong, and we’ll let the scoreboard do the talking",
+    "Respect every snap and keep the pedal down",
+    "Fast start, clean finish — that’s the recipe",
+    "Trust the read, trust the teammate, trust the plan",
+    "Play smart, play physical, play together",
+    "Win situations — third down, red zone, two-minute — and you win the game",
+    "Stack good plays, stack good quarters, stack a win",
+    "No hero ball — just do your job and the big plays come",
+    "Tempo, toughness, and takeaways — that’s our identity",
+    "Be the hammer, not the nail",
+    "Details matter — ball security and discipline travel",
+    "We want to be the last team still swinging",
 ]
 
 def _fallback_quote_for(team: str, salt: int) -> str:
     idx = (abs(hash(team)) + salt) % len(_FALLBACK_QUOTES)
-    return _FALLBACK_QUOTES[idx].format(TEAM=team)
+    return _FALLBACK_QUOTES[idx]
 
 
 # ===============================
@@ -254,9 +253,9 @@ def _quotes_prompt_payload(league_id: int, year: int, week: int, cards: List[Dic
         "items": items,
         "style_rules": [
             'Return STRICT JSON: a list where each element has keys: "home_team","away_team","home_quote","away_quote","closer".',
-            'Each quote MUST be formatted EXACTLY as: "<text> ," The <Team> coach says.',
-            "Make the two quotes for a matchup clearly different in tone/wording (e.g., one calm & focused, the other fiery & aggressive).",
-            "Vary metaphors (weather, chess, racing, construction, boxing, cooking, etc.) so no two quotes sound alike.",
+            'The "home_quote" and "away_quote" MUST be the quote TEXT ONLY (no quotes, no commas, no attribution).',
+            'We will add the formatting like `"text ," The Team coach says.` ourselves.',
+            "Make home and away quotes clearly different in tone/wording (vary metaphors: weather, chess, racing, construction, boxing, cooking, etc.).",
             "Quotes must be short, punchy, clean. No profanity. No owners or real-person names.",
             "Closers: one short hype sentence (pun welcome), no invented history.",
         ]
@@ -271,6 +270,22 @@ def _force_json(text: str) -> Any:
             cleaned = cleaned[4:].lstrip()
     return json.loads(cleaned)
 
+def _strip_existing_attrib(q: str, team: str) -> str:
+    """
+    Remove any trailing attribution like: ,\" The <Team> coach says. (case-insensitive)
+    Also strips any wrapping quotes and trailing punctuation we will re-add.
+    """
+    s = q.strip().strip('"').strip("“”").strip()
+    # remove things like: , The Team coach says.  or ," The Team coach says.
+    patterns = [
+        rf'\s*,?\s*["“”]?\s*,?\s*The\s+{re.escape(team)}\s+coach\s+says\.?$',  # The Team coach says.
+        r'\s*,?\s*The\s+coach\s+says\.?$',                                     # The coach says.
+        r'\s*,?\s*coach\s+says\.?$',                                           # coach says.
+    ]
+    for pat in patterns:
+        s = re.sub(pat, '', s, flags=re.IGNORECASE)
+    return s.strip()
+
 def _ensure_distinct(q_home: str, q_away: str, home_team: str, away_team: str) -> tuple[str, str]:
     """
     If quotes are identical or too similar, replace away with a different fallback.
@@ -280,6 +295,20 @@ def _ensure_distinct(q_home: str, q_away: str, home_team: str, away_team: str) -
     if _norm(q_home) == _norm(q_away):
         q_away = _fallback_quote_for(away_team, salt=7)
     return q_home, q_away
+
+def _format_quote_text(text: str, team: str) -> str:
+    """
+    Format the final line EXACTLY as:
+      "<text> ," The <Team> coach says.
+    Ensures a space before the comma inside the quotes and no duplicate attributions.
+    """
+    base = _strip_existing_attrib(text or "", team)
+    if not base:
+        base = "Play fast, play smart, finish"
+    # ensure internal trailing ' ,'
+    base = base.rstrip(' ,')
+    base = base + " ,"
+    return f"\"{base}\" The {team} coach says."
 
 def _get_quotes_for_matchups(
     cards: List[Dict[str, Any]],
@@ -291,7 +320,7 @@ def _get_quotes_for_matchups(
 ) -> List[Dict[str, str]]:
     """
     Ask the LLM for quotes + closers only, as JSON aligned with the order of `cards`.
-    Ensures distinct quotes even if the LLM returns similar lines.
+    Ensures distinct quotes and formats attribution exactly once.
     """
     client = _openai_client()
     model = _default_model()
@@ -317,7 +346,7 @@ def _get_quotes_for_matchups(
         if not isinstance(data, list):
             raise ValueError("Expected a JSON list.")
     except Exception:
-        # If anything fails, build a full fallback list the same length as cards
+        # Fallback: build quotes from pool
         data = []
         for c in cards:
             h = c["matchup"]["home"]["team_name"]
@@ -330,7 +359,7 @@ def _get_quotes_for_matchups(
                 "closer": "This one could turn into a fireworks show — bring popcorn! 🍿",
             })
 
-    # Enforce distinctness & correct formatting for every item
+    # Enforce distinctness & final formatting
     cleaned: List[Dict[str, str]] = []
     for i, c in enumerate(cards):
         m = c["matchup"]
@@ -338,24 +367,13 @@ def _get_quotes_for_matchups(
         a = m["away"]["team_name"]
         rec = data[i] if i < len(data) else {}
 
-        hq = rec.get("home_quote") or _fallback_quote_for(h, salt=3)
-        aq = rec.get("away_quote") or _fallback_quote_for(a, salt=4)
+        hq_raw = rec.get("home_quote") or _fallback_quote_for(h, salt=3)
+        aq_raw = rec.get("away_quote") or _fallback_quote_for(a, salt=4)
         closer = rec.get("closer") or "Whistles ready — this has the makings of a highlight reel. 🎬"
 
-        # force exact format `"text ," The Team coach says.`
-        def _format(q: str, team: str) -> str:
-            q = q.strip().strip('"')
-            # ensure space-before-comma style
-            if not q.endswith(","):
-                if q.endswith(" ,"):
-                    pass
-                else:
-                    q = q + " ,"
-            return f"\"{q}\" The {team} coach says."
-
-        hq, aq = _ensure_distinct(hq, aq, h, a)
-        hq = _format(hq, h)
-        aq = _format(aq, a)
+        hq_raw, aq_raw = _ensure_distinct(hq_raw, aq_raw, h, a)
+        hq = _format_quote_text(hq_raw, h)
+        aq = _format_quote_text(aq_raw, a)
 
         cleaned.append({
             "home_team": h,
@@ -371,9 +389,7 @@ def _get_quotes_for_matchups(
 # Render helpers
 # ===============================
 def _fmt_players_inline(players: List[Dict[str, Any]]) -> str:
-    """
-    Format: Name (Pos, Pts) joined by commas.
-    """
+    """Format: Name (Pos, Pts) joined by commas."""
     parts = []
     for p in players[:4]:
         nm = p.get("name", "Player")
@@ -437,8 +453,8 @@ def generate_week_preview(
         home = m["home"]; away = m["away"]
         key = (home["team_name"], away["team_name"])
         q = qmap.get(key, {
-            "home_quote": f"\"Win the down, win the day ,\" The {home['team_name']} coach says.",
-            "away_quote": f"\"Play fast, play smart, finish ,\" The {away['team_name']} coach says.",
+            "home_quote": _format_quote_text("Win the down, win the day", home["team_name"]),
+            "away_quote": _format_quote_text("Play fast, play smart, finish", away["team_name"]),
             "closer": "This one could turn into a fireworks show — bring popcorn! 🍿"
         })
 
