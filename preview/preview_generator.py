@@ -71,13 +71,15 @@ def _get_week_pairs(league: League, week: int) -> List[Tuple[int, int]]:
 
 def _is_bench(p) -> bool:
     """
-    Treat bench strictly as 'bench=True' or slot_position 'BE'.
+    Treat bench strictly as:
+      - attribute bench == True, or
+      - slot_position in {"BE", "BENCH", "BN"} (robust to provider variations).
     Everything else counts as starting for projections.
     """
     if getattr(p, "bench", None) is True:
         return True
     slot = str(getattr(p, "slot_position", getattr(p, "position", "")) or "").upper()
-    return slot == "BE"
+    return slot in {"BE", "BENCH", "BN"}
 
 def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dict[int, TeamMeta]) -> TeamWeekProjection:
     """
@@ -164,7 +166,7 @@ def build_weekly_preview_cards(
         cards.append({
             "matchup": {
                 "favorite": favorite.team_name if edge != 0 else "Pick'em",
-                "edge_points": edge,                     # numeric edge is OK to display
+                "edge_points": edge,                     # numeric spread (starters-only)
                 "combined_proj_starters": combined,      # internal only (for featured pick)
                 "home": {
                     "team_name": h.team_name,            # no abbreviations
@@ -215,32 +217,34 @@ def _projection_source() -> str:
 def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """
     Style: energetic, pun-friendly, emoji-sprinkled, no owners.
-    EVERY matchup must follow the same detailed format; the featured one simply gets a ⭐ marker and appears first.
+    EVERY matchup uses the same detailed format; the featured one simply gets a ⭐ marker and appears first.
 
     For each matchup (featured first, then the rest):
     ## {star_if_featured} Matchup: <Team A> (<Record A>) vs <Team B> (<Record B>) 🏈
     _Edge:_ <Favorite or Pick'em> by <edge>
 
-    Based on projections from {SOURCE}, <Team A> can expect a <TopPlayerPoints> point effort from <Top Player> in week <W> — 
+    ### At-a-glance
+    - **Records:** <Team A> (<Record A>) vs <Team B> (<Record B>)
+    - **Projected spread (starters-only):** <if Pick'em then "Pick'em"; else "<Favorite> by <edge>">
+    - **Key players — <Team A>:** <P1 (Pos, Pts)>, <P2 (Pos, Pts)>, <P3 (Pos, Pts)>, <P4 (Pos, Pts)>
+    - **Key players — <Team B>:** <P1 (Pos, Pts)>, <P2 (Pos, Pts)>, <P3 (Pos, Pts)>, <P4 (Pos, Pts)>
+
+    Based on projections from {SOURCE}, <Team A> can expect a <TopPlayerPoints> point effort from <Top Player> in week <W> —
     if they execute, they could really move the chains. Add 1–2 short, playful puns or football idioms. Use 1–3 emojis (e.g., 🔥⚡️📈).
     "<short, realistic pre-game quote> ," The <Team A> coach says.
-
-    **Key starters:** <P1 (Pos, Pts)>, <P2 (Pos, Pts)>, <P3 (Pos, Pts)>, <P4 (Pos, Pts)>
 
     Based on projections from {SOURCE}, <Team B> can expect a <TopPlayerPoints> point effort from <Top Player> in week <W> —
     they'll need crisp drives and clean pockets to stay on schedule. Add 1–2 short, playful puns or football idioms. Use 1–3 emojis.
     "<short, realistic pre-game quote> ," The <Team B> coach says.
 
-    **Key starters:** <P1 (Pos, Pts)>, <P2 (Pos, Pts)>, <P3 (Pos, Pts)>, <P4 (Pos, Pts)>
-
     Finish with one short hype sentence for the matchup (pun encouraged). Do NOT invent schedules/history you weren't given.
 
     STRICT rules:
-    - Use ONLY the provided data (team names/records, the four highest-projected starters per team, numeric edge).
+    - Use ONLY the provided data (team names/records, the four highest-projected starters per team, numeric edge, favorite).
     - Mention exactly four starters per team (if fewer available, list what's provided).
-    - Never show team total or combined points; combined is ONLY for picking the featured matchup.
+    - Never show team total or combined points; combined is ONLY for selecting the featured matchup.
     - Never use owner names; attribute quotes generically to “The <Team> coach says.”
-    - Quotes must be *original*, brief, and realistic coach-speak (not verbatim from any real person), formatted EXACTLY as:
+    - Quotes must be *original*, brief, and realistic coach-speak (not verbatim from real people), formatted EXACTLY as:
       "<quote text> ," The <Team Name> coach says.
       (Note: include a space before the comma inside the quotes, then close the quote, then space, then 'The <Team> coach says.')
     - Keep it concise, with light emojis and a couple of puns—don’t overdo it.
@@ -262,13 +266,13 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
                 "team": m["home"]["team_name"],
                 "record": m["home"]["record"],
                 "streak": m["home"]["streak"],
-                "top_players": m["home"]["top_players_list"],  # list of 4 dicts
+                "top_players": m["home"]["top_players_list"],  # list of up to 4 dicts
             },
             "away": {
                 "team": m["away"]["team_name"],
                 "record": m["away"]["record"],
                 "streak": m["away"]["streak"],
-                "top_players": m["away"]["top_players_list"],  # list of 4 dicts
+                "top_players": m["away"]["top_players_list"],  # list of up to 4 dicts
             }
         }
         if item["featured"]:
@@ -294,6 +298,7 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
         "You are LLM-Commissioner, writing WEEKLY PREVIEWS that are lively and fan-friendly. "
         "Do not invent facts beyond the input. Keep paragraphs tight and exciting. "
         "No owner names. Do NOT display any team total or combined points. Use a couple of fun puns."
+        "Use emojis sparingly to enhance the fun tone."
     )
 
     user = {
@@ -324,6 +329,7 @@ def generate_week_preview_from_cards(
     Create a single Markdown preview:
     - ⭐ Featured matchup first (highest combined starters; not displayed)
     - Same detailed structure for EVERY matchup
+    - At-a-glance section (records, projected spread, key players with points)
     - Top 4 starters per team shown
     - One coach quote per team (formatted exactly)
     - Emojis + puns to keep it fun
