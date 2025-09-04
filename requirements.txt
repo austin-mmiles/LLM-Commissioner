@@ -4,3 +4,4 @@ espn-api
 python-dotenv
 markdown>=3.6
 xhtml2pdf>=0.2.13
+weasyprint>=61
