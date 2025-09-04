@@ -36,7 +36,7 @@ class TeamWeekProjection:
     team_name: str
     logo_url: str
     projected_points: float  # SUM OF STARTERS ONLY (internal; not displayed)
-    top_players: List[PlayerProj]  # STARTERS ONLY
+    top_players: List[PlayerProj]  # STARTERS ONLY (top 4)
     meta: TeamMeta
 
 
@@ -69,11 +69,22 @@ def _get_week_pairs(league: League, week: int) -> List[Tuple[int, int]]:
         pairs.append((m.home_team.team_id, m.away_team.team_id))
     return pairs
 
+def _is_starter_slot(slot_value: Any) -> bool:
+    """
+    Treat only 'BE' (bench) as non-starter per your requirement.
+    Everything else, including FLEX/IR/etc., counts as starting for projections.
+    """
+    try:
+        return str(slot_value).upper() != "BE"
+    except Exception:
+        # Fallback to True unless we can prove it's bench
+        return True
+
 def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dict[int, TeamMeta]) -> TeamWeekProjection:
     """
     Build a team projection for THIS WEEK from STARTERS ONLY.
     - Sum projected points for starters only (bench excluded)
-    - Top players = starters sorted by projected points desc
+    - Top players = top 4 starters by projected points
     """
     box_scores = league.box_scores(week=week)
     projected_points = 0.0
@@ -92,22 +103,24 @@ def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dic
             proj = getattr(p, "projected_points", None)
             if proj is None:
                 continue
-            is_starter = not getattr(p, "bench", False)
+
+            slot = getattr(p, "slot_position", getattr(p, "position", ""))
+            is_starter = _is_starter_slot(slot)
             if not is_starter:
                 # 🚫 BENCH EXCLUDED COMPLETELY
                 continue
-            pos = getattr(p, "slot_position", getattr(p, "position", ""))
+
             starters.append(PlayerProj(
                 player_id=str(getattr(p, "playerId", getattr(p, "id", "")) or ""),
                 name=str(getattr(p, "name", "Player")),
-                position=str(pos),
+                position=str(slot),
                 projected_points=float(proj),
                 is_starter=True,
             ))
             projected_points += float(proj)
 
     starters.sort(key=lambda x: -x.projected_points)
-    top_players = starters[:3]
+    top_players = starters[:4]  # ⬅️ top 4 starters
     tm = meta[team_id]
     return TeamWeekProjection(
         team_id=team_id,
@@ -120,7 +133,7 @@ def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dic
 
 
 # ===============================
-# Build "cards" for UI + LLM (no owner fields)
+# Build "cards" for UI + LLM (no owner fields, no headliner)
 # ===============================
 def build_weekly_preview_cards(
     league_id: int,
@@ -138,14 +151,14 @@ def build_weekly_preview_cards(
         h = _get_team_week_projection(league, week, home_id, meta)
         a = _get_team_week_projection(league, week, away_id, meta)
 
-        # Edge & combined are strictly from STARTERS ONLY
+        # ✅ Edge & combined strictly from STARTERS ONLY (bench excluded above)
         margin = round(h.projected_points - a.projected_points, 2)
         favorite = h if margin >= 0 else a
         edge = abs(margin)
         combined = round(h.projected_points + a.projected_points, 2)
 
         def players_list(t: TeamWeekProjection) -> List[Dict[str, Any]]:
-            # starters only
+            # starters only, top 4
             return [
                 {"name": p.name, "position": p.position, "proj": round(p.projected_points, 1)}
                 for p in t.top_players
@@ -154,26 +167,26 @@ def build_weekly_preview_cards(
         cards.append({
             "matchup": {
                 "favorite": favorite.team_name if edge != 0 else "Pick'em",
-                "edge_points": edge,                     # numeric; OK to display
-                "combined_proj_starters": combined,      # internal only (for featured)
+                "edge_points": edge,                     # numeric edge is OK to display
+                "combined_proj_starters": combined,      # internal only (for featured pick)
                 "home": {
                     "team_name": h.team_name,            # no abbreviations
                     "logo": h.logo_url,
                     "record": h.meta.record,
                     "streak": h.meta.streak,
-                    "top_players_list": players_list(h),
+                    "top_players_list": players_list(h), # top 4 starters
                 },
                 "away": {
                     "team_name": a.team_name,
                     "logo": a.logo_url,
                     "record": a.meta.record,
                     "streak": a.meta.streak,
-                    "top_players_list": players_list(a),
+                    "top_players_list": players_list(a), # top 4 starters
                 },
             }
         })
 
-    # Flag the Matchup of the Week: highest combined starters projection
+    # ⭐ Featured = highest combined starters projection (not displayed)
     if cards:
         best_idx = max(
             range(len(cards)),
@@ -204,80 +217,82 @@ def _projection_source() -> str:
 
 def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """
-    Output style modeled after the user's example, WITHOUT owner names:
+    Style: energetic, readable, no owners.
+    EVERY matchup must follow the same detailed format; the featured one simply gets a ⭐ marker.
 
-    For the featured matchup (highest combined starters), then each remaining matchup:
+    For each matchup (featured first):
+    ## {star_if_featured} Matchup: <Team A> (<Record A>) vs <Team B> (<Record B>)
+    _Edge:_ <Favorite or Pick'em> by <edge>
 
-    ## Matchup: Team A (Record A) vs Team B (Record B)
-    Based on projections from {SOURCE}, Team A can expect a <POINTS> point effort from <Top Player> in week <W>, with a nod to 1–2 other key players.
-    "<short, realistic pre-game quote>," the Team A coach said.
+    Based on projections from {SOURCE}, <Team A> can expect a <TopPlayerPoints> point effort from <Top Player> in week <W>, 
+    with support from the rest of the starting crew.
+    "<short, realistic pre-game quote>," the <Team A> coach said.
+    **Key starters:** <P1 (Pos, Pts)>, <P2 (Pos, Pts)>, <P3 (Pos, Pts)>, <P4 (Pos, Pts)>
 
-    Based on projections from {SOURCE}, Team B can expect a <POINTS> point effort from <Top Player> in week <W>, with a nod to 1–2 other key players.
-    "<short, realistic pre-game quote>," the Team B coach said.
+    Based on projections from {SOURCE}, <Team B> can expect a <TopPlayerPoints> point effort from <Top Player> in week <W>, 
+    with support from the rest of the starting crew.
+    "<short, realistic pre-game quote>," the <Team B> coach said.
+    **Key starters:** <P1 (Pos, Pts)>, <P2 (Pos, Pts)>, <P3 (Pos, Pts)>, <P4 (Pos, Pts)>
 
-    Finish with one short hype sentence. Do NOT invent schedules/history details you were not given.
+    Finish with one short hype sentence. Do NOT invent schedules/history you weren't given.
 
-    Rules:
-    - Use ONLY data provided (team names/records, top players with their individual projections, edge label).
-    - Mention 1–2 key players (prioritize the highest projected "headliner" and optionally one more).
-    - NEVER use owner names or any personal names.
-    - Do not display any team total projection.
-    - Keep it fun, punchy, and readable.
+    Constraints:
+    - Use ONLY the provided data (team names/records, top starter projections per team, numeric edge).
+    - Mention 4 starters per team (use the four highest projected starters). If fewer available, list what's provided.
+    - Never show team total or combined points; combined is ONLY for picking the featured matchup.
+    - Never use owner names; attribute quotes generically to “the <Team> coach.”
+    - Keep it concise and friendly; a few tasteful emojis are okay but optional.
     """
     import json
 
     source = _projection_source()
 
-    # Split featured vs others (combined used upstream; we don't include combined in text)
+    # Order: featured first, then others
     featured = None
     others: List[Dict[str, Any]] = []
-
     for c in cards:
         m = c["matchup"]
-
-        def headliner(lst: List[Dict[str, Any]]) -> Dict[str, Any] | None:
-            return lst[0] if (isinstance(lst, list) and len(lst) > 0) else None
-
-        home_tp = m["home"].get("top_players_list", [])
-        away_tp = m["away"].get("top_players_list", [])
-
         item = {
+            "featured": bool(m.get("is_featured", False)),
             "favorite": m["favorite"],
-            "edge_points": m["edge_points"],  # may be used in phrasing "edge: X"
+            "edge_points": m["edge_points"],
             "home": {
                 "team": m["home"]["team_name"],
                 "record": m["home"]["record"],
                 "streak": m["home"]["streak"],
-                "top_players": home_tp,
-                "headliner": headliner(home_tp),
+                "top_players": m["home"]["top_players_list"],  # list of 4 dicts
             },
             "away": {
                 "team": m["away"]["team_name"],
                 "record": m["away"]["record"],
                 "streak": m["away"]["streak"],
-                "top_players": away_tp,
-                "headliner": headliner(away_tp),
+                "top_players": m["away"]["top_players_list"],  # list of 4 dicts
             }
         }
-
-        if m.get("is_featured"):
+        if item["featured"]:
             featured = item
         else:
             others.append(item)
+
+    # Ensure featured first in the data we send
+    ordered = []
+    if featured:
+        ordered.append(featured)
+    ordered.extend(others)
 
     payload = {
         "league_id": league_id,
         "season": year,
         "week": week,
         "projection_source": source,
-        "featured_matchup": featured,
-        "other_matchups": others,
+        "matchups": ordered,
     }
 
     system = (
         "You are LLM-Commissioner, writing WEEKLY PREVIEWS in lively, fan-friendly prose. "
-        "No owner names; refer to 'the Team X coach' generically in quotes attribution. "
-        "Do not invent facts beyond the input. Keep paragraphs tight and exciting."
+        "Do not invent facts beyond the input. Keep paragraphs tight and exciting. "
+        "No owner names; attribute quotes generically to the team coach. "
+        "Do NOT display any team total or combined points."
     )
 
     user = {
@@ -300,15 +315,16 @@ def generate_week_preview_from_cards(
     year: int,
     week: int,
     temperature: float = 0.9,
-    max_tokens: int = 2200,
+    max_tokens: int = 2400,
     presence_penalty: float = 0.2,
     frequency_penalty: float = 0.1,
 ) -> str:
     """
-    Create a single Markdown preview with:
-    - ⭐ Featured matchup first (highest combined starters)
-    - Two team paragraphs per matchup, each with a coach quote (no names)
-    - Mentions of 1–2 top players with their projection numbers
+    Create a single Markdown preview:
+    - ⭐ Featured matchup first (highest combined starters; not displayed)
+    - Same detailed structure for EVERY matchup
+    - Top 4 starters per team shown
+    - One coach quote per team
     - No combined totals displayed
     """
     client = _openai_client()
@@ -332,7 +348,7 @@ def generate_week_preview(
     espn_s2: str | None = None,
     swid: str | None = None,
     temperature: float = 0.9,
-    max_tokens: int = 2200,
+    max_tokens: int = 2400,
 ) -> str:
     """
     One-call convenience for the Streamlit app: fetch → LLM → Markdown.
