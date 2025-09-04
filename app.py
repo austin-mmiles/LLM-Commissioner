@@ -70,7 +70,7 @@ col1, col2, col3 = st.columns(3)
 with col1:
     league_id = st.number_input("League ID", min_value=1, step=1, format="%d")
 with col2:
-    year = st.number_input("Season (year)", min_value=2015, max_value=2100, value=5, step=1)
+    year = st.number_input("Season (year)", min_value=2015, max_value=2100, value=2025, step=1)
 with col3:
     week = st.number_input("Week", min_value=1, max_value=18, value=1, step=1)
 
