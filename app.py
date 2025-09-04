@@ -94,21 +94,48 @@ def _render(text: str):
 def _fetch_matchups_cached(_league_id: int, _year: int, _week: int):
     return get_week_matchups(_league_id, _year, _week)
 
-# ---------- PDF Export Helpers (Markdown → PDF) ----------
-def _md_to_pdf_bytes(md_text: str, title: str = "Weekly Preview") -> bytes:
-    try:
-        from markdown import markdown as md_to_html
-        from xhtml2pdf import pisa
-    except Exception as e:
-        raise RuntimeError(
-            "PDF dependencies missing. Please add to requirements.txt: "
-            "'markdown>=3.6' and 'xhtml2pdf>=0.2.13'"
-        ) from e
+# ---------- PDF Export Helpers (Markdown → PDF with emoji support) ----------
+def _build_pdf_html(md_text: str, title: str) -> str:
+    from markdown import markdown as md_to_html
+    body_html = md_to_html(md_text or "", extensions=["tables", "fenced_code"])
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+</head>
+<body>
+{body_html}
+</body>
+</html>"""
 
-    import io
-    _DEF_CSS = """
+def _emoji_css() -> str:
+    """
+    Font stack tries native color emoji on each OS, then falls back to Noto Emoji if present.
+    You can vendor a TTF (e.g., ./fonts/NotoEmoji-Regular.ttf or ./fonts/NotoColorEmoji.ttf).
+    """
+    import os
+    faces = []
+    for candidate in [
+        "./fonts/NotoEmoji-Regular.ttf",
+        "./fonts/NotoColorEmoji.ttf",
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/System/Library/Fonts/Apple Color Emoji.ttf",
+        "C:/Windows/Fonts/seguiemj.ttf",
+    ]:
+        if os.path.exists(candidate):
+            faces.append(
+                f"@font-face {{ font-family: 'LocalEmoji'; src: url('file://{os.path.abspath(candidate)}'); }}"
+            )
+
+    base_css = """
     @page { size: letter; margin: 0.6in; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.35; color: #111; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
+                   'LocalEmoji', 'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Emoji',
+                   'Noto Sans Symbols 2', sans-serif;
+      line-height: 1.35; color: #111; word-break: break-word;
+    }
     h1, h2, h3 { color: #0b3558; margin-top: 0.8em; }
     h1 { font-size: 22pt; }
     h2 { font-size: 16pt; }
@@ -123,26 +150,44 @@ def _md_to_pdf_bytes(md_text: str, title: str = "Weekly Preview") -> bytes:
     table { border-collapse: collapse; width: 100%; margin: 0.4em 0; }
     th, td { border: 1px solid #ddd; padding: 6px 8px; font-size: 10pt; }
     th { background: #f2f4f7; text-align: left; }
-    img.logo { height: 22px; vertical-align: middle; margin-right: 6px; }
     """
-    body_html = md_to_html(md_text or "", extensions=["tables", "fenced_code"])
-    html = f"""<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>{title}</title>
-<style>{_DEF_CSS}</style>
-</head>
-<body>
-{body_html}
-</body>
-</html>"""
-    out = io.BytesIO()
-    pisa_status = pisa.CreatePDF(src=html, dest=out)
-    if pisa_status.err:
-        raise RuntimeError("xhtml2pdf failed to create PDF.")
-    out.seek(0)
-    return out.read()
+    return "\n".join(faces) + base_css
+
+def _md_to_pdf_bytes(md_text: str, title: str = "Weekly Preview") -> bytes:
+    """
+    Prefer WeasyPrint for emoji support; fall back to xhtml2pdf if unavailable.
+    """
+    html = _build_pdf_html(md_text, title)
+
+    # Try WeasyPrint first (better Unicode/emoji rendering)
+    try:
+        from weasyprint import HTML, CSS
+        css = CSS(string=_emoji_css())
+        pdf_bytes = HTML(string=html, base_url=".").write_pdf(stylesheets=[css])
+        return pdf_bytes
+    except Exception as weasy_err:
+        # Fallback: xhtml2pdf (limited emoji support; may render boxes for some glyphs)
+        try:
+            from xhtml2pdf import pisa
+        except Exception as e:
+            raise RuntimeError(
+                "Neither WeasyPrint nor xhtml2pdf is available. Install weasyprint>=61 or xhtml2pdf>=0.2.13."
+            ) from e
+
+        html_with_css = html.replace(
+            "</head>",
+            f"<style>{_emoji_css()}</style></head>"
+        )
+
+        import io
+        out = io.BytesIO()
+        pisa_status = pisa.CreatePDF(src=html_with_css, dest=out)
+        if pisa_status.err:
+            raise RuntimeError(
+                "xhtml2pdf failed to create PDF. Emojis may require WeasyPrint or an embedded emoji font."
+            ) from weasy_err
+        out.seek(0)
+        return out.read()
 
 # ---------- Recap “extra spice” (adds emojis & puns; does not change logic) ----------
 def _spice_up_recap(md_text: str, week_val: int) -> str:
@@ -157,13 +202,11 @@ def _spice_up_recap(md_text: str, week_val: int) -> str:
             out.append("_Tape don’t lie — but it does rewind. Let’s roll the highlights!_ 🎬✨")
             out.append("")
             inserted_banner = True
-        # amp up headings with a little juice
         if line.startswith("#"):
             line = re.sub(r"^(#+\s*)(.*)$", lambda m: f"{m.group(1)}{m.group(2)} 🏈💥", line)
         out.append(line)
 
     text = "\n".join(out)
-    # Sprinkle some fun keywords -> emojis/puns
     replacements = {
         "MVP": "MVP ⭐",
         "Upset": "Upset 🚨",
@@ -179,7 +222,7 @@ def _spice_up_recap(md_text: str, week_val: int) -> str:
         text = re.sub(rf"\b{k}\b", v, text, flags=re.IGNORECASE)
     return text
 
-# -------------------- Main Recap action (generator unchanged) --------------------
+# -------------------- Main Recap action (UNCHANGED summarizer) --------------------
 disabled = _import_error is not None or not bool(os.getenv("OPENAI_API_KEY"))
 if st.button("Generate Weekly Recap", type="primary", disabled=disabled):
     if _import_error:
@@ -225,7 +268,6 @@ if st.button("Generate Weekly Recap", type="primary", disabled=disabled):
                 st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
             st.stop()
 
-    # add emojis & puns (non-destructive post-process)
     recap = _spice_up_recap(recap, int(week))
 
     st.success("Recap generated!")
@@ -303,7 +345,7 @@ if st.button("Build Weekly Preview", type="secondary", disabled=not bool(os.gete
         mime="text/markdown",
     )
 
-    # PDF export
+    # PDF export with emoji support
     try:
         pdf_bytes = _md_to_pdf_bytes(preview_doc, title=f"Weekly Preview – Week {int(week)}")
         st.download_button(
@@ -313,6 +355,6 @@ if st.button("Build Weekly Preview", type="secondary", disabled=not bool(os.gete
             mime="application/pdf",
         )
     except Exception as e:
-        st.warning("Couldn't generate a PDF. See details below.")
+        st.warning("Couldn't generate a PDF with emojis. See details below.")
         with st.expander("PDF error details"):
             st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
