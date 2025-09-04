@@ -219,29 +219,34 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
     """
     Style: energetic, readable, no owners.
     EVERY matchup must follow the same detailed format; the featured one simply gets a ⭐ marker.
+    DO NOT change the overall template — only add the requested lines.
 
     For each matchup (featured first):
-    ## {star_if_featured} Matchup: <Team A> (<Record A>) vs <Team B> (<Record B>)
+    ## {star_if_featured} Matchup: ![logo]({home.logo}) {home.team} ({home.record}) vs ![logo]({away.logo}) {away.team} ({away.record})
     _Edge:_ <Favorite or Pick'em> by <edge>
 
-    Based on projections from {SOURCE}, <Team A> can expect a <TopPlayerPoints> point effort from <Top Player> in week <W>, 
+    <!-- NEW top-of-section lines showing the four highest-projected starters (with points) for each team -->
+    **Top starters — {home.team}:** P1 (Pos, Pts), P2 (Pos, Pts), P3 (Pos, Pts), P4 (Pos, Pts)
+    **Top starters — {away.team}:** P1 (Pos, Pts), P2 (Pos, Pts), P3 (Pos, Pts), P4 (Pos, Pts)
+
+    Based on projections from {SOURCE}, {home.team} can expect a <TopPlayerPoints> point effort from <Top Player> in week {W}, 
     with support from the rest of the starting crew.
-    "<short, realistic pre-game quote>," the <Team A> coach said.
+    "<short, realistic pre-game quote> ," The {home.team} coach says.
     **Key starters:** <P1 (Pos, Pts)>, <P2 (Pos, Pts)>, <P3 (Pos, Pts)>, <P4 (Pos, Pts)>
 
-    Based on projections from {SOURCE}, <Team B> can expect a <TopPlayerPoints> point effort from <Top Player> in week <W>, 
+    Based on projections from {SOURCE}, {away.team} can expect a <TopPlayerPoints> point effort from <Top Player> in week {W}, 
     with support from the rest of the starting crew.
-    "<short, realistic pre-game quote>," the <Team B> coach said.
+    "<short, realistic pre-game quote> ," The {away.team} coach says.
     **Key starters:** <P1 (Pos, Pts)>, <P2 (Pos, Pts)>, <P3 (Pos, Pts)>, <P4 (Pos, Pts)>
 
     Finish with one short hype sentence. Do NOT invent schedules/history you weren't given.
 
     Constraints:
-    - Use ONLY the provided data (team names/records, top starter projections per team, numeric edge).
-    - Mention 4 starters per team (use the four highest projected starters). If fewer available, list what's provided.
+    - Use ONLY the provided data (team names, records, logos, top starter projections per team, numeric edge).
+    - Mention 4 starters per team in both the new top lines AND the existing **Key starters** lines (if fewer available, list what's provided).
     - Never show team total or combined points; combined is ONLY for picking the featured matchup.
-    - Never use owner names; attribute quotes generically to “the <Team> coach.”
-    - Keep it concise and friendly; a few tasteful emojis are okay but optional.
+    - Never use owner names; attribute quotes generically to “The <Team> coach says.”
+    - Keep it concise and friendly; tasteful emojis and 1–2 puns per team are welcome.
     """
     import json
 
@@ -259,12 +264,14 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
             "home": {
                 "team": m["home"]["team_name"],
                 "record": m["home"]["record"],
+                "logo": m["home"]["logo"],
                 "streak": m["home"]["streak"],
                 "top_players": m["home"]["top_players_list"],  # list of 4 dicts
             },
             "away": {
                 "team": m["away"]["team_name"],
                 "record": m["away"]["record"],
+                "logo": m["away"]["logo"],
                 "streak": m["away"]["streak"],
                 "top_players": m["away"]["top_players_list"],  # list of 4 dicts
             }
@@ -289,10 +296,10 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
     }
 
     system = (
-        "You are LLM-Commissioner, writing WEEKLY PREVIEWS in lively, fan-friendly prose. "
+        "You are LLM-Commissioner, writing WEEKLY PREVIEWS that are lively and fan-friendly. "
         "Do not invent facts beyond the input. Keep paragraphs tight and exciting. "
-        "No owner names; attribute quotes generically to the team coach. "
-        "Do NOT display any team total or combined points."
+        "No owner names. Do NOT display any team total or combined points. "
+        "Use a few fun emojis and puns, but stay readable."
     )
 
     user = {
@@ -315,7 +322,7 @@ def generate_week_preview_from_cards(
     year: int,
     week: int,
     temperature: float = 0.9,
-    max_tokens: int = 2400,
+    max_tokens: int = 2600,
     presence_penalty: float = 0.2,
     frequency_penalty: float = 0.1,
 ) -> str:
@@ -323,8 +330,9 @@ def generate_week_preview_from_cards(
     Create a single Markdown preview:
     - ⭐ Featured matchup first (highest combined starters; not displayed)
     - Same detailed structure for EVERY matchup
-    - Top 4 starters per team shown
-    - One coach quote per team
+    - NEW top-of-section lines listing 4 highest-projected starters per team (with points)
+    - Records & logos next to team names in the header
+    - One coach quote per team (exact format)
     - No combined totals displayed
     """
     client = _openai_client()
@@ -348,7 +356,7 @@ def generate_week_preview(
     espn_s2: str | None = None,
     swid: str | None = None,
     temperature: float = 0.9,
-    max_tokens: int = 2400,
+    max_tokens: int = 2600,
 ) -> str:
     """
     One-call convenience for the Streamlit app: fetch → LLM → Markdown.
