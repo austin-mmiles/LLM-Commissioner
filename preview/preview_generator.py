@@ -5,9 +5,12 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Any
 
+# Data fetch
 from espn_api.football import League
 
-# ---- Data types (same shape your UI used before) ----
+# -------------------------------
+# Data types
+# -------------------------------
 @dataclass
 class TeamMeta:
     team_id: int
@@ -37,29 +40,33 @@ class TeamWeekProjection:
     top_players: List[PlayerProj]
     meta: TeamMeta
 
-# ----------------- ESPN fetch helpers -----------------
+
+# -------------------------------
+# ESPN fetch helpers
+# -------------------------------
 def _load_league(league_id: int, year: int, espn_s2: str | None, swid: str | None) -> League:
     return League(league_id=league_id, year=year, espn_s2=espn_s2, swid=swid)
+
+def _safe_owner_name(t) -> str:
+    # espn_api sometimes exposes t.owner as a string; sometimes an object; sometimes None.
+    owner = getattr(t, "owner", None)
+    if isinstance(owner, str) and owner.strip():
+        return owner.strip()
+    # Avoid team abbreviations per user requirement; never fall back to them.
+    return "Unknown Coach"
 
 def _get_team_meta(league: League) -> Dict[int, TeamMeta]:
     meta: Dict[int, TeamMeta] = {}
     for t in league.teams:
-        # owner_name can vary by espn_api version; fallbacks
-        owner_name = getattr(t, "owner", None)
-        if isinstance(owner_name, str) and owner_name:
-            oname = owner_name
-        else:
-            oname = getattr(t, "team_abbrev", "") or "Owner"
-
         record = f"{t.wins}-{t.losses}{('-' + str(t.ties)) if getattr(t, 'ties', 0) else ''}"
         meta[t.team_id] = TeamMeta(
             team_id=t.team_id,
-            team_name=t.team_name,
-            owner_name=oname,
-            logo_url=t.logo_url,
+            team_name=str(t.team_name),
+            owner_name=_safe_owner_name(t),
+            logo_url=str(getattr(t, "logo_url", "") or ""),
             record=record,
-            points_for=getattr(t, "points_for", 0.0),
-            points_against=getattr(t, "points_against", 0.0),
+            points_for=float(getattr(t, "points_for", 0.0) or 0.0),
+            points_against=float(getattr(t, "points_against", 0.0) or 0.0),
             streak=f"{getattr(t, 'streak_type', 'NONE')} {getattr(t, 'streak_length', 0)}",
         )
     return meta
@@ -67,6 +74,8 @@ def _get_team_meta(league: League) -> Dict[int, TeamMeta]:
 def _get_week_pairs(league: League, week: int) -> List[Tuple[int, int]]:
     pairs: List[Tuple[int, int]] = []
     for m in league.scoreboard(week=week):
+        if not (hasattr(m, "home_team") and hasattr(m, "away_team")):
+            continue
         pairs.append((m.home_team.team_id, m.away_team.team_id))
     return pairs
 
@@ -76,29 +85,30 @@ def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dic
     players: List[PlayerProj] = []
 
     for box in box_scores:
-        if box.home_team.team_id == team_id:
+        if getattr(box.home_team, "team_id", None) == team_id:
             lineup = box.home_lineup
-        elif box.away_team.team_id == team_id:
+        elif getattr(box.away_team, "team_id", None) == team_id:
             lineup = box.away_lineup
         else:
             continue
 
         for p in lineup:
             proj = getattr(p, "projected_points", None)
-            pos = getattr(p, "slot_position", getattr(p, "position", ""))
-            is_starter = not getattr(p, "bench", False)
             if proj is None:
                 continue
+            pos = getattr(p, "slot_position", getattr(p, "position", ""))
+            is_starter = not getattr(p, "bench", False)
             if is_starter:
                 projected_points += float(proj)
             players.append(PlayerProj(
-                player_id=str(getattr(p, "playerId", getattr(p, "id", ""))),
-                name=getattr(p, "name", "Player"),
-                position=pos,
+                player_id=str(getattr(p, "playerId", getattr(p, "id", "")) or ""),
+                name=str(getattr(p, "name", "Player")),
+                position=str(pos),
                 projected_points=float(proj),
                 is_starter=bool(is_starter),
             ))
 
+    # Prioritize starters & higher projections
     players.sort(key=lambda x: (not x.is_starter, -x.projected_points))
     top_players = players[:3]
     tm = meta[team_id]
@@ -112,8 +122,17 @@ def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dic
         meta=tm,
     )
 
-# Public: return raw “cards” (for debugging / raw expander)
-def build_weekly_preview_cards(league_id: int, year: int, week: int, espn_s2: str | None = None, swid: str | None = None) -> List[Dict[str, Any]]:
+
+# -------------------------------
+# Public: build "cards" used by the UI and LLM
+# -------------------------------
+def build_weekly_preview_cards(
+    league_id: int,
+    year: int,
+    week: int,
+    espn_s2: str | None = None,
+    swid: str | None = None
+) -> List[Dict[str, Any]]:
     league = _load_league(league_id, year, espn_s2, swid)
     meta = _get_team_meta(league)
     pairs = _get_week_pairs(league, week)
@@ -128,45 +147,43 @@ def build_weekly_preview_cards(league_id: int, year: int, week: int, espn_s2: st
         underdog = a if margin >= 0 else h
         edge = abs(margin)
 
-        def players_blurb(t: TeamWeekProjection) -> str:
-            return ", ".join([f"{p.name} ({p.position} {p.projected_points:.1f})" for p in t.top_players])
-
-        # lightweight deterministic quotes (final copy comes from LLM)
-        home_quote = f"{h.owner_name}: 'Spreadsheet says dub.'"
-        away_quote = f"{a.owner_name}: 'Receipts get cashed this week.'"
+        def players_list(t: TeamWeekProjection) -> List[Dict[str, Any]]:
+            return [
+                {"name": p.name, "position": p.position, "proj": round(p.projected_points, 1)}
+                for p in t.top_players
+            ]
 
         cards.append({
             "matchup": {
                 "favorite": favorite.team_name if edge != 0 else "Pick'em",
                 "edge_points": edge,
                 "home": {
-                    "team_id": h.team_id,
-                    "team_name": h.team_name,
+                    "team_name": h.team_name,          # no abbreviations
                     "owner": h.owner_name,
                     "logo": h.logo_url,
                     "proj": h.projected_points,
-                    "top_players": players_blurb(h),
                     "record": h.meta.record,
                     "streak": h.meta.streak,
+                    "top_players_list": players_list(h),  # structured for easier LLM use
                 },
                 "away": {
-                    "team_id": a.team_id,
                     "team_name": a.team_name,
                     "owner": a.owner_name,
                     "logo": a.logo_url,
                     "proj": a.projected_points,
-                    "top_players": players_blurb(a),
                     "record": a.meta.record,
                     "streak": a.meta.streak,
+                    "top_players_list": players_list(a),
                 },
-            },
-            "quotes": {"home": home_quote, "away": away_quote},
+            }
         })
     return cards
 
-# ----------------- LLM: generate weekly preview text -----------------
+
+# -------------------------------
+# LLM: OpenAI client & prompt
+# -------------------------------
 def _openai_client():
-    # mirror gpt_summarizer.py pattern (env-based)
     from openai import OpenAI
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -174,37 +191,64 @@ def _openai_client():
     return OpenAI(api_key=api_key)
 
 def _default_model() -> str:
-    # let users override via env to match your summarizer style
+    # Let users override to match their recap model
     return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+def _projection_source() -> str:
+    # Cosmetic label to mirror your league vibe (e.g., "Fantasy Sharks")
+    return os.getenv("PREVIEW_PROJECTION_SOURCE", "ESPN")
 
 def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """
-    Return messages for chat.completions; structured similarly to your recap prompting:
-    - system: voice & rules
-    - user: compact JSON of matchups with projections + meta
+    Style: energetic, pun-friendly, readable.
+    Output: For EACH matchup:
+      ## Matchup: Team A vs Team B
+      **Edge:** <Favorite or Pick'em> by <edge> (if edge=0, say Pick'em)
+      Team A paragraph:
+        - Start with: "Based on projections from {SOURCE}, <Team A> can expect a <POINTS> point effort from <Top Player> in week <W> ..."
+        - Include a short 1–2 line coach-style quote in italics, attributed like: — <Team A> coach <Owner Name>
+        - Keep it punchy; 1–3 sentences. Use playful puns/phrases; avoid niche/insider references.
+      Team B paragraph: same pattern for Team B.
+      One-line closer: hype the matchup; do NOT invent historical claims.
+    Constraints:
+      - Only use the data provided (teams, owners, records, streaks, projections, top players list, favorite/edge).
+      - Do NOT fabricate stats, injuries, or schedules.
+      - Never use team abbreviations; always use the full team and owner names provided.
+      - Make quotes sound like realistic sports interviews (clichés ok: focus, execution, next play, etc.). No profanity, no slurs.
     """
     import json
 
-    system = (
-        "You are LLM-Commissioner, writing a concise, witty WEEKLY PREVIEW for a fantasy football league. "
-        "Tone: playful but league-safe (no insults to protected classes), clever puns ok. "
-        "Goal: 1 paragraph per matchup with: clear favorite/edge, key projected players, "
-        "and a short 1–2 line quote attributed to an owner or star player. "
-        "Output in GitHub-flavored Markdown. Use section headers like '## Matchup: Team A vs Team B'. "
-        "Do NOT invent stats—only use provided projections/records/streaks."
-    )
-    # minimize token use: pass only the essentials
-    minimal_cards = []
+    source = _projection_source()
+
+    # Compact payload for the LLM (easy to digest)
+    payload = {
+        "league_id": league_id,
+        "season": year,
+        "week": week,
+        "projection_source": source,
+        "matchups": []
+    }
+
     for c in cards:
         m = c["matchup"]
-        minimal_cards.append({
+        # Extract top "headliner" player per team (first in list if present)
+        def headliner(lst: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+            return lst[0] if (isinstance(lst, list) and len(lst) > 0) else None
+
+        home_tp = m["home"].get("top_players_list", [])
+        away_tp = m["away"].get("top_players_list", [])
+
+        payload["matchups"].append({
+            "favorite": m["favorite"],
+            "edge": m["edge_points"],
             "home": {
                 "team": m["home"]["team_name"],
                 "owner": m["home"]["owner"],
                 "record": m["home"]["record"],
                 "streak": m["home"]["streak"],
                 "proj": m["home"]["proj"],
-                "top_players": m["home"]["top_players"],
+                "top_players": home_tp,
+                "headliner": headliner(home_tp),
             },
             "away": {
                 "team": m["away"]["team_name"],
@@ -212,18 +256,28 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
                 "record": m["away"]["record"],
                 "streak": m["away"]["streak"],
                 "proj": m["away"]["proj"],
-                "top_players": m["away"]["top_players"],
-            },
-            "favorite": m["favorite"],
-            "edge": m["edge_points"],
-            "quotes": c.get("quotes", {}),
+                "top_players": away_tp,
+                "headliner": headliner(away_tp),
+            }
         })
 
+    system = (
+        "You are LLM-Commissioner, a witty sports writer crafting a WEEKLY PREVIEW for a fantasy football league. "
+        "Write with energy, humor, and playful puns while staying league-safe. "
+        "Be concise and highly readable: short paragraphs, bold key numbers, and clear edges. "
+        "Quotes must sound like realistic coach/player interview lines (no profanity or insults). "
+        "Never invent facts beyond the provided data."
+    )
+
     user = {
-        "league_id": league_id,
-        "season": year,
-        "week": week,
-        "matchups": minimal_cards
+        "instructions": "Generate a Markdown preview for each matchup using the specified format and constraints.",
+        "format": {
+            "section_header": "## Matchup: <Team A> vs <Team B>",
+            "edge_line": "**Edge:** <Favorite or Pick'em> by <edge>",
+            "team_paragraphs": 2,
+            "closer_line": "1 short hype sentence; no invented history."
+        },
+        "data": payload
     }
 
     return [
@@ -231,35 +285,52 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
         {"role": "user", "content": json.dumps(user, ensure_ascii=False)}
     ]
 
-def generate_week_preview_from_cards(cards: List[Dict[str, Any]], league_id: int, year: int, week: int,
-                                     temperature: float = 0.7, max_tokens: int = 1800) -> str:
+
+# -------------------------------
+# LLM generation
+# -------------------------------
+def generate_week_preview_from_cards(
+    cards: List[Dict[str, Any]],
+    league_id: int,
+    year: int,
+    week: int,
+    temperature: float = 0.9,
+    max_tokens: int = 2000,
+    presence_penalty: float = 0.2,
+    frequency_penalty: float = 0.1,
+) -> str:
     """
-    Generate a single Markdown/HTML preview document from prepared preview cards.
-    Mirrors the LLM flow used by gpt_summarizer.py (env-based client/model).
+    Create a single Markdown preview document with lively, punny copy and realistic coach quotes.
     """
     client = _openai_client()
     model = _default_model()
     messages = _preview_prompt(league_id, year, week, cards)
 
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception as e:
-        # Bubble up—app shows details in expander
-        raise
+    resp = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        presence_penalty=presence_penalty,
+        frequency_penalty=frequency_penalty,
+    )
+    return resp.choices[0].message.content.strip()
 
-def generate_week_preview(league_id: int, year: int, week: int, espn_s2: str | None = None, swid: str | None = None,
-                          temperature: float = 0.7, max_tokens: int = 1800) -> str:
+def generate_week_preview(
+    league_id: int,
+    year: int,
+    week: int,
+    espn_s2: str | None = None,
+    swid: str | None = None,
+    temperature: float = 0.9,
+    max_tokens: int = 2000,
+) -> str:
     """
-    One-call convenience: fetch projections -> LLM -> Markdown.
-    Kept separate from build_weekly_preview_cards so the app can still show raw data.
+    One-call convenience for the Streamlit app: fetch → LLM → Markdown.
     """
     cards = build_weekly_preview_cards(league_id, year, week, espn_s2=espn_s2, swid=swid)
     if not cards:
-        return "# Weekly Preview\n\n_No matchups found for this week._"
-    return generate_week_preview_from_cards(cards, league_id, year, week, temperature=temperature, max_tokens=max_tokens)
+        return f"# Weekly Preview (Week {week})\n\n_No matchups found for this week._"
+    return generate_week_preview_from_cards(
+        cards, league_id, year, week, temperature=temperature, max_tokens=max_tokens
+    )
