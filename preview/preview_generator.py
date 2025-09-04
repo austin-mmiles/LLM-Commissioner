@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Any
 
@@ -72,13 +73,12 @@ def _get_week_pairs(league: League, week: int) -> List[Tuple[int, int]]:
 def _is_starter_slot(slot_value: Any) -> bool:
     """
     Treat only 'BE' (bench) as non-starter per your requirement.
-    Everything else, including FLEX/IR/etc., counts as starting for projections.
+    Everything else (including FLEX) counts as starting for projections.
     """
     try:
         return str(slot_value).upper() != "BE"
     except Exception:
-        # Fallback to True unless we can prove it's bench
-        return True
+        return True  # fallback to True unless we can prove it's bench
 
 def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dict[int, TeamMeta]) -> TeamWeekProjection:
     """
@@ -105,10 +105,8 @@ def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dic
                 continue
 
             slot = getattr(p, "slot_position", getattr(p, "position", ""))
-            is_starter = _is_starter_slot(slot)
-            if not is_starter:
-                # 🚫 BENCH EXCLUDED COMPLETELY
-                continue
+            if not _is_starter_slot(slot):
+                continue  # 🚫 BENCH EXCLUDED COMPLETELY
 
             starters.append(PlayerProj(
                 player_id=str(getattr(p, "playerId", getattr(p, "id", "")) or ""),
@@ -133,7 +131,7 @@ def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dic
 
 
 # ===============================
-# Build "cards" for UI + LLM (no owner fields, no headliner)
+# Build "cards" for UI + (hybrid LLM)
 # ===============================
 def build_weekly_preview_cards(
     league_id: int,
@@ -151,14 +149,13 @@ def build_weekly_preview_cards(
         h = _get_team_week_projection(league, week, home_id, meta)
         a = _get_team_week_projection(league, week, away_id, meta)
 
-        # ✅ Edge & combined strictly from STARTERS ONLY (bench excluded above)
+        # ✅ Edge & featured strictly from STARTERS ONLY (bench excluded above)
         margin = round(h.projected_points - a.projected_points, 2)
         favorite = h if margin >= 0 else a
         edge = abs(margin)
         combined = round(h.projected_points + a.projected_points, 2)
 
         def players_list(t: TeamWeekProjection) -> List[Dict[str, Any]]:
-            # starters only, top 4
             return [
                 {"name": p.name, "position": p.position, "proj": round(p.projected_points, 1)}
                 for p in t.top_players
@@ -167,21 +164,21 @@ def build_weekly_preview_cards(
         cards.append({
             "matchup": {
                 "favorite": favorite.team_name if edge != 0 else "Pick'em",
-                "edge_points": edge,                     # numeric edge is OK to display
+                "edge_points": edge,                     # numeric spread (starters-only)
                 "combined_proj_starters": combined,      # internal only (for featured pick)
                 "home": {
-                    "team_name": h.team_name,            # no abbreviations
+                    "team_name": h.team_name,
                     "logo": h.logo_url,
                     "record": h.meta.record,
                     "streak": h.meta.streak,
-                    "top_players_list": players_list(h), # top 4 starters
+                    "top_players_list": players_list(h),  # top 4 starters
                 },
                 "away": {
                     "team_name": a.team_name,
                     "logo": a.logo_url,
                     "record": a.meta.record,
                     "streak": a.meta.streak,
-                    "top_players_list": players_list(a), # top 4 starters
+                    "top_players_list": players_list(a),  # top 4 starters
                 },
             }
         })
@@ -197,7 +194,7 @@ def build_weekly_preview_cards(
 
 
 # ===============================
-# LLM: OpenAI
+# OpenAI client (quotes only)
 # ===============================
 def _openai_client():
     from openai import OpenAI
@@ -207,163 +204,233 @@ def _openai_client():
     return OpenAI(api_key=api_key)
 
 def _default_model() -> str:
-    # Let users override to match their recap model
+    # Keep this small/fast; we only need short quotes + a closer.
     return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 def _projection_source() -> str:
-    # Cosmetic label to match your league vibe (e.g., "Fantasy Sharks", "ESPN")
     return os.getenv("PREVIEW_PROJECTION_SOURCE", "ESPN")
 
 
-def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """
-    Style: energetic, readable, no owners.
-    EVERY matchup must follow the same detailed format; the featured one simply gets a ⭐ marker.
-    DO NOT change the overall template — only add the requested lines.
-
-    For each matchup (featured first):
-    ## {star_if_featured} Matchup: ![logo]({home.logo}) {home.team} ({home.record}) vs ![logo]({away.logo}) {away.team} ({away.record})
-    _Edge:_ <Favorite or Pick'em> by <edge>
-
-    <!-- NEW top-of-section lines showing the four highest-projected starters (with points) for each team -->
-    **Top starters — {home.team}:** P1 (Pos, Pts), P2 (Pos, Pts), P3 (Pos, Pts), P4 (Pos, Pts)
-    **Top starters — {away.team}:** P1 (Pos, Pts), P2 (Pos, Pts), P3 (Pos, Pts), P4 (Pos, Pts)
-
-    Based on projections from {SOURCE}, {home.team} can expect a <TopPlayerPoints> point effort from <Top Player> in week {W}, 
-    with support from the rest of the starting crew.
-    "<short, realistic pre-game quote> ," The {home.team} coach says.
-    **Key starters:** <P1 (Pos, Pts)>, <P2 (Pos, Pts)>, <P3 (Pos, Pts)>, <P4 (Pos, Pts)>
-
-    Based on projections from {SOURCE}, {away.team} can expect a <TopPlayerPoints> point effort from <Top Player> in week {W}, 
-    with support from the rest of the starting crew.
-    "<short, realistic pre-game quote> ," The {away.team} coach says.
-    **Key starters:** <P1 (Pos, Pts)>, <P2 (Pos, Pts)>, <P3 (Pos, Pts)>, <P4 (Pos, Pts)>
-
-    Finish with one short hype sentence. Do NOT invent schedules/history you weren't given.
-
-    Constraints:
-    - Use ONLY the provided data (team names, records, logos, top starter projections per team, numeric edge).
-    - Mention 4 starters per team in both the new top lines AND the existing **Key starters** lines (if fewer available, list what's provided).
-    - Never show team total or combined points; combined is ONLY for picking the featured matchup.
-    - Never use owner names; attribute quotes generically to “The <Team> coach says.”
-    - Keep it concise and friendly; tasteful emojis and 1–2 puns per team are welcome.
-    """
-    import json
-
-    source = _projection_source()
-
-    # Order: featured first, then others
-    featured = None
-    others: List[Dict[str, Any]] = []
+# ===============================
+# LLM: generate quotes + closers ONLY (JSON)
+# ===============================
+def _quotes_prompt_payload(league_id: int, year: int, week: int, cards: List[Dict[str, Any]]) -> dict:
+    items = []
     for c in cards:
         m = c["matchup"]
-        item = {
-            "featured": bool(m.get("is_featured", False)),
+        items.append({
+            "home_team": m["home"]["team_name"],
+            "away_team": m["away"]["team_name"],
             "favorite": m["favorite"],
             "edge_points": m["edge_points"],
-            "home": {
-                "team": m["home"]["team_name"],
-                "record": m["home"]["record"],
-                "logo": m["home"]["logo"],
-                "streak": m["home"]["streak"],
-                "top_players": m["home"]["top_players_list"],  # list of 4 dicts
-            },
-            "away": {
-                "team": m["away"]["team_name"],
-                "record": m["away"]["record"],
-                "logo": m["away"]["logo"],
-                "streak": m["away"]["streak"],
-                "top_players": m["away"]["top_players_list"],  # list of 4 dicts
-            }
-        }
-        if item["featured"]:
-            featured = item
-        else:
-            others.append(item)
-
-    # Ensure featured first in the data we send
-    ordered = []
-    if featured:
-        ordered.append(featured)
-    ordered.extend(others)
-
-    payload = {
+        })
+    return {
         "league_id": league_id,
         "season": year,
         "week": week,
-        "projection_source": source,
-        "matchups": ordered,
+        "items": items,
+        "style_rules": [
+            'Return STRICT JSON: a list where each element has keys: "home_team","away_team","home_quote","away_quote","closer".',
+            'Each quote MUST be formatted EXACTLY as: "<text> ," The <Team> coach says.',
+            "Quotes must sound like realistic pre-game lines (no owners or real-person names).",
+            "Keep quotes short, punchy, clean. No profanity.",
+            "Closers: one short hype sentence (pun welcome), no invented history."
+        ]
     }
 
-    system = (
-        "You are LLM-Commissioner, writing WEEKLY PREVIEWS that are lively and fan-friendly. "
-        "Do not invent facts beyond the input. Keep paragraphs tight and exciting. "
-        "No owner names. Do NOT display any team total or combined points. "
-        "Use a few fun emojis and puns, but stay readable."
-    )
+def _force_json(text: str) -> Any:
+    """Parse JSON even if the model wraps it in ```json fences."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        # remove any code fences
+        cleaned = cleaned.strip("`")
+        # drop leading 'json' if present
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].lstrip()
+    return json.loads(cleaned)
 
-    user = {
-        "instructions": "Generate the Markdown preview using the format and constraints above.",
-        "data": payload
-    }
-
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": json.dumps(user, ensure_ascii=False)}
-    ]
-
-
-# ===============================
-# LLM generation
-# ===============================
-def generate_week_preview_from_cards(
+def _get_quotes_for_matchups(
     cards: List[Dict[str, Any]],
     league_id: int,
     year: int,
     week: int,
-    temperature: float = 0.9,
-    max_tokens: int = 2600,
-    presence_penalty: float = 0.2,
-    frequency_penalty: float = 0.1,
-) -> str:
+    temperature: float = 0.7,
+    max_tokens: int = 1000,
+) -> List[Dict[str, str]]:
     """
-    Create a single Markdown preview:
-    - ⭐ Featured matchup first (highest combined starters; not displayed)
-    - Same detailed structure for EVERY matchup
-    - NEW top-of-section lines listing 4 highest-projected starters per team (with points)
-    - Records & logos next to team names in the header
-    - One coach quote per team (exact format)
-    - No combined totals displayed
+    Ask the LLM for quotes + closers only, as JSON aligned with the order of `cards`.
     """
     client = _openai_client()
     model = _default_model()
-    messages = _preview_prompt(league_id, year, week, cards)
+
+    payload = _quotes_prompt_payload(league_id, year, week, cards)
+    messages = [
+        {"role": "system", "content": (
+            "You are LLM-Commissioner. "
+            "Reply with STRICT JSON ONLY. No preamble, no code fences unless necessary for JSON validity."
+        )},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
+    ]
 
     resp = client.chat.completions.create(
         model=model,
         messages=messages,
         temperature=temperature,
         max_tokens=max_tokens,
-        presence_penalty=presence_penalty,
-        frequency_penalty=frequency_penalty,
     )
-    return resp.choices[0].message.content.strip()
+    content = resp.choices[0].message.content
+    try:
+        data = _force_json(content)
+        if not isinstance(data, list):
+            raise ValueError("Expected a JSON list.")
+        return data
+    except Exception:
+        # Fallback: generate basic vanilla quotes locally if parsing fails
+        fallback = []
+        for c in cards:
+            h = c["matchup"]["home"]["team_name"]
+            a = c["matchup"]["away"]["team_name"]
+            fallback.append({
+                "home_team": h,
+                "away_team": a,
+                "home_quote": f"\"We just have to execute and play our brand of football ,\" The {h} coach says.",
+                "away_quote": f"\"Respect the opponent, protect the ball, and finish drives ,\" The {a} coach says.",
+                "closer": "Buckle up — this one could flip the scoreboard like a pancake."
+            })
+        return fallback
 
+
+# ===============================
+# Render helpers
+# ===============================
+def _fmt_players_inline(players: List[Dict[str, Any]]) -> str:
+    """
+    Format: Name (Pos, Pts) joined by commas.
+    """
+    parts = []
+    for p in players[:4]:
+        nm = p.get("name", "Player")
+        pos = p.get("position", "")
+        pts = p.get("proj", 0)
+        parts.append(f"{nm} ({pos}, {pts})")
+    return ", ".join(parts)
+
+def _edge_line(favorite: str, edge: float) -> str:
+    if favorite == "Pick'em" or edge == 0:
+        return "_Edge:_ **Pick'em**"
+    return f"_Edge:_ **{favorite} by {edge}**"
+
+
+# ===============================
+# Build final preview (deterministic structure)
+# ===============================
 def generate_week_preview(
     league_id: int,
     year: int,
     week: int,
     espn_s2: str | None = None,
     swid: str | None = None,
-    temperature: float = 0.9,
-    max_tokens: int = 2600,
+    temperature: float = 0.7,
+    max_tokens: int = 1000,
 ) -> str:
     """
-    One-call convenience for the Streamlit app: fetch → LLM → Markdown.
+    Deterministic structure (records/logos/top-4/edge) + LLM quotes/closers.
+    Returns a single Markdown document.
     """
     cards = build_weekly_preview_cards(league_id, year, week, espn_s2=espn_s2, swid=swid)
     if not cards:
         return f"# Weekly Preview (Week {week})\n\n_No matchups found for this week._"
-    return generate_week_preview_from_cards(
-        cards, league_id, year, week, temperature=temperature, max_tokens=max_tokens
-    )
+
+    # Get quotes/closers in the same order
+    quotes = _get_quotes_for_matchups(cards, league_id, year, week, temperature=temperature, max_tokens=max_tokens)
+
+    # Reorder so featured appears first
+    featured = [c for c in cards if c["matchup"].get("is_featured")]
+    others = [c for c in cards if not c["matchup"].get("is_featured")]
+    ordered = featured + others
+
+    # Need quotes in the same visual order; map by (home,away)
+    qmap: Dict[Tuple[str, str], Dict[str, str]] = {}
+    for q in quotes:
+        key = (q.get("home_team"), q.get("away_team"))
+        qmap[key] = q
+
+    source = _projection_source()
+
+    lines: List[str] = []
+    lines.append(f"# WEEK {week} PREVIEW: LET'S RUMBLE! 🏈🔥")
+    lines.append("")
+    if featured:
+        lines.append("## ⭐ Matchup of the Week")
+        lines.append("")
+
+    # Render each matchup (same detailed format for ALL; featured just appears first)
+    for c in ordered:
+        m = c["matchup"]
+        home = m["home"]; away = m["away"]
+        key = (home["team_name"], away["team_name"])
+        q = qmap.get(key, {
+            "home_quote": f"\"Win the down, win the day ,\" The {home['team_name']} coach says.",
+            "away_quote": f"\"Play fast, play smart, finish ,\" The {away['team_name']} coach says.",
+            "closer": "This one could turn into a fireworks show — bring popcorn! 🍿"
+        })
+
+        # Header with logos + records by team name (unchanged template, just augmented)
+        lines.append(
+            f"## {'⭐ ' if m.get('is_featured') else ''}Matchup: "
+            f"![logo]({home['logo']}) {home['team_name']} ({home['record']}) vs "
+            f"![logo]({away['logo']}) {away['team_name']} ({away['record']})"
+        )
+        lines.append(_edge_line(m['favorite'], m['edge_points']))
+        lines.append("")
+
+        # NEW: Top-of-section lines — four highest projected starters (with points) for each team
+        lines.append(f"**Top starters — {home['team_name']}:** {_fmt_players_inline(home['top_players_list'])}")
+        lines.append(f"**Top starters — {away['team_name']}:** {_fmt_players_inline(away['top_players_list'])}")
+        lines.append("")
+
+        # Flavor paragraphs (lightly playful; keep structure the same)
+        # We'll grab the first top player for each team if present to mention.
+        h_top = home['top_players_list'][0] if home['top_players_list'] else None
+        a_top = away['top_players_list'][0] if away['top_players_list'] else None
+        if h_top:
+            lines.append(
+                f"Based on projections from {source}, {home['team_name']} can expect a **{h_top['proj']}** point spark from "
+                f"**{h_top['name']}** ({h_top['position']}) this week — if they keep the chains moving, "
+                f"the scoreboard might light up like a pinball machine. ⚡️📈"
+            )
+        else:
+            lines.append(f"Based on projections from {source}, {home['team_name']} will lean on their starters to set the tone. ⚡️")
+        lines.append(q["home_quote"])
+        lines.append("")
+
+        if a_top:
+            lines.append(
+                f"Based on projections from {source}, {away['team_name']} can expect **{a_top['proj']}** shiny points from "
+                f"**{a_top['name']}** ({a_top['position']}) — clean pockets and crisp routes could turn drives into paydirt. 🔥🚀"
+            )
+        else:
+            lines.append(f"Based on projections from {source}, {away['team_name']} needs rhythm early to stay on schedule. 🔥")
+        lines.append(q["away_quote"])
+
+        # Closer
+        lines.append("")
+        lines.append(f"*Final whistle:* {q['closer']}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+# (Optional) Keep for compatibility if other code calls this name:
+def generate_week_preview_from_cards(
+    cards: List[Dict[str, Any]],
+    league_id: int,
+    year: int,
+    week: int,
+    temperature: float = 0.7,
+    max_tokens: int = 1000,
+    presence_penalty: float = 0.0,
+    frequency_penalty: float = 0.0,
+) -> str:
+    # We now ignore the passed `cards` and re-use the single entry point to ensure consistent rendering.
+    # (Kept for backwards compatibility with earlier app versions.)
+    return generate_week_preview(league_id, year, week, temperature=temperature, max_tokens=max_tokens)
