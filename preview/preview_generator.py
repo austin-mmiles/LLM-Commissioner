@@ -52,7 +52,7 @@ def _safe_owner_name(t) -> str:
     owner = getattr(t, "owner", None)
     if isinstance(owner, str) and owner.strip():
         return owner.strip()
-    # Avoid team abbreviations per user requirement; never fall back to them.
+    # Avoid team abbreviations entirely.
     return "Unknown Coach"
 
 def _get_team_meta(league: League) -> Dict[int, TeamMeta]:
@@ -144,7 +144,6 @@ def build_weekly_preview_cards(
 
         margin = round(h.projected_points - a.projected_points, 2)
         favorite = h if margin >= 0 else a
-        underdog = a if margin >= 0 else h
         edge = abs(margin)
 
         def players_list(t: TeamWeekProjection) -> List[Dict[str, Any]]:
@@ -164,7 +163,7 @@ def build_weekly_preview_cards(
                     "proj": h.projected_points,
                     "record": h.meta.record,
                     "streak": h.meta.streak,
-                    "top_players_list": players_list(h),  # structured for easier LLM use
+                    "top_players_list": players_list(h),
                 },
                 "away": {
                     "team_name": a.team_name,
@@ -195,32 +194,31 @@ def _default_model() -> str:
     return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 def _projection_source() -> str:
-    # Cosmetic label to mirror your league vibe (e.g., "Fantasy Sharks")
+    # Cosmetic label to match your league vibe (e.g., "Fantasy Sharks")
     return os.getenv("PREVIEW_PROJECTION_SOURCE", "ESPN")
 
 def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """
     Style: energetic, pun-friendly, readable.
-    Output: For EACH matchup:
+    Output for EACH matchup:
       ## Matchup: Team A vs Team B
       **Edge:** <Favorite or Pick'em> by <edge> (if edge=0, say Pick'em)
       Team A paragraph:
         - Start with: "Based on projections from {SOURCE}, <Team A> can expect a <POINTS> point effort from <Top Player> in week <W> ..."
-        - Include a short 1–2 line coach-style quote in italics, attributed like: — <Team A> coach <Owner Name>
-        - Keep it punchy; 1–3 sentences. Use playful puns/phrases; avoid niche/insider references.
-      Team B paragraph: same pattern for Team B.
-      One-line closer: hype the matchup; do NOT invent historical claims.
+        - Include a short 1–2 line coach-style quote in *italics*, attributed like: — <Team A> coach <Owner Name>
+        - 1–3 sentences. Playful puns/phrases; easy to scan.
+      Team B paragraph: same pattern.
+      One-line closer: hype the matchup; do NOT invent history.
     Constraints:
-      - Only use the data provided (teams, owners, records, streaks, projections, top players list, favorite/edge).
-      - Do NOT fabricate stats, injuries, or schedules.
-      - Never use team abbreviations; always use the full team and owner names provided.
-      - Make quotes sound like realistic sports interviews (clichés ok: focus, execution, next play, etc.). No profanity, no slurs.
+      - Only use the provided data (teams, owners, records, streaks, projections, top players list, favorite/edge).
+      - Do NOT fabricate stats, injuries, past meetings, or schedules.
+      - Never use team abbreviations; always use full team and owner names.
+      - Quotes must sound like realistic post-practice interview lines (focus, execution, next play, etc.). No profanity.
     """
     import json
 
     source = _projection_source()
 
-    # Compact payload for the LLM (easy to digest)
     payload = {
         "league_id": league_id,
         "season": year,
@@ -231,7 +229,7 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
 
     for c in cards:
         m = c["matchup"]
-        # Extract top "headliner" player per team (first in list if present)
+
         def headliner(lst: List[Dict[str, Any]]) -> Dict[str, Any] | None:
             return lst[0] if (isinstance(lst, list) and len(lst) > 0) else None
 

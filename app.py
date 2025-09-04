@@ -2,14 +2,12 @@
 import os
 import traceback
 
-# ⬇️ PREVIEW IMPORTS (updated)
-# Was: from preview.preview_generator import build_weekly_preview
+# ⬇️ PREVIEW IMPORTS (OpenAI-driven preview)
 from preview.preview_generator import (
     build_weekly_preview_cards,
     generate_week_preview,
 )
 
-# Streamlit setup & env knobs
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "poll"
 os.environ["STREAMLIT_SERVER_RUN_ON_SAVE"] = "false"
 
@@ -28,11 +26,10 @@ def _maybe_env_from_secrets(key: str):
     except Exception:
         pass  # st.secrets may not exist locally
 
-# ⚠️ Do not change these keys to preserve existing recap behavior
 for _k in ("OPENAI_API_KEY", "ESPN_S2", "SWID"):
     _maybe_env_from_secrets(_k)
 
-# -------------------- Lazy imports so import errors don't kill the app (Recap path) --------------------
+# -------------------- Lazy imports so import errors don't kill the app --------------------
 _import_error = None
 def _load_modules():
     global get_week_matchups, generate_week_recap
@@ -49,14 +46,13 @@ _import_error = _load_modules()
 with st.sidebar:
     st.header("Optional ESPN Credentials")
     st.caption("Set these only if your league is private. For public leagues, you can leave them blank.")
-    # ⚠️ Keep keys the same for recap: ESPN_S2 + SWID
     s2 = st.text_input("ESPN_S2", value=os.getenv("ESPN_S2", ""), type="password")
-    swid_sidebar = st.text_input("SWID", value=os.getenv("SWID", ""), type="password")
+    swid = st.text_input("SWID", value=os.getenv("SWID", ""), type="password")
     if st.button("Save ESPN Credentials"):
         if s2:
             os.environ["ESPN_S2"] = s2
-        if swid_sidebar:
-            os.environ["SWID"] = swid_sidebar
+        if swid:
+            os.environ["SWID"] = swid
         st.success("Saved for this session.")
 
     # Diagnostics (safe: shows flags, not values)
@@ -68,7 +64,7 @@ with st.sidebar:
             "Import error?": str(_import_error) if _import_error else "None",
         })
 
-# -------------------- Inputs (shared) --------------------
+# -------------------- Inputs --------------------
 col1, col2, col3 = st.columns(3)
 with col1:
     league_id = st.number_input("League ID", min_value=1, step=1, format="%d")
@@ -79,7 +75,7 @@ with col3:
 
 st.caption("We’ll summarize **every matchup** for the selected week. ESPN cookies are optional for public leagues.")
 
-# -------------------- Helpers (shared) --------------------
+# -------------------- Helpers --------------------
 def _need_openai() -> bool:
     if not os.getenv("OPENAI_API_KEY"):
         st.error("Missing **OPENAI_API_KEY** — add it in Streamlit Secrets (or as an environment variable).")
@@ -97,7 +93,7 @@ def _render(text: str):
 def _fetch_matchups_cached(_league_id: int, _year: int, _week: int):
     return get_week_matchups(_league_id, _year, _week)
 
-# -------------------- Recap (UNCHANGED) --------------------
+# -------------------- Main Recap action (UNCHANGED) --------------------
 disabled = _import_error is not None or not bool(os.getenv("OPENAI_API_KEY"))
 if st.button("Generate Weekly Recap", type="primary", disabled=disabled):
     if _import_error:
@@ -163,16 +159,14 @@ if disabled:
         msgs.append("OPENAI_API_KEY missing")
     st.info("Generate button disabled: " + ", ".join(msgs))
 
-# -------------------- Weekly Preview (LLM-driven; MATCHES recap UX) --------------------
+# -------------------- Weekly Preview (LLM-driven; mirrors Recap UX) --------------------
 st.header("Weekly Preview")
 
-# Read cookies (keep recap's SWID naming; add ESPN_SWID fallback ONLY here)
+# Read cookies (keep recap's SWID naming; accept ESPN_SWID as fallback here)
 espn_s2 = os.getenv("ESPN_S2", None)
 swid = os.getenv("SWID", os.getenv("ESPN_SWID", None))
 
-# Match recap UX: single button, spinners, raw data expander, render + download
-preview_disabled = not bool(os.getenv("OPENAI_API_KEY"))
-if st.button("Build Weekly Preview", type="secondary", disabled=preview_disabled):
+if st.button("Build Weekly Preview", type="secondary", disabled=not bool(os.getenv("OPENAI_API_KEY"))):
     if not league_id or not year or not week:
         st.error("Please fill in League ID, Year, and Week.")
         st.stop()
@@ -200,7 +194,7 @@ if st.button("Build Weekly Preview", type="secondary", disabled=preview_disabled
     with st.expander("Show raw preview context"):
         st.write(cards)
 
-    # 2) LLM generate single Markdown doc (mirrors recap style)
+    # 2) LLM generate (single doc, like recap)
     with st.spinner("Assembling Weekly Preview with LLM…"):
         try:
             preview_doc = generate_week_preview(int(league_id), int(year), int(week), espn_s2=espn_s2, swid=swid)
@@ -219,7 +213,3 @@ if st.button("Build Weekly Preview", type="secondary", disabled=preview_disabled
         file_name=f"weekly_preview_{league_id}_{year}_w{week}.md",
         mime="text/markdown",
     )
-
-# If the Preview button is disabled, show why (mirrors recap messaging)
-if preview_disabled:
-    st.info("Build Weekly Preview disabled: OPENAI_API_KEY missing")
