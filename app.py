@@ -1,6 +1,7 @@
 # app.py
 import os
 import traceback
+import re
 
 # ⬇️ PREVIEW IMPORTS (OpenAI-driven preview)
 from preview.preview_generator import (
@@ -69,7 +70,7 @@ col1, col2, col3 = st.columns(3)
 with col1:
     league_id = st.number_input("League ID", min_value=1, step=1, format="%d")
 with col2:
-    year = st.number_input("Season (year)", min_value=2015, max_value=2100, value=2024, step=1)
+    year = st.number_input("Season (year)", min_value=2015, max_value=2100, value=5, step=1)
 with col3:
     week = st.number_input("Week", min_value=1, max_value=18, value=1, step=1)
 
@@ -85,7 +86,7 @@ def _need_openai() -> bool:
 def _render(text: str):
     # Render HTML if present; otherwise Markdown
     if "<" in text and ">" in text and "</" in text:
-        st.components.v1.html(text, height=900, scrolling=True)
+        st.components.v1.html(text, height=1200, scrolling=True)
     else:
         st.markdown(text)
 
@@ -93,10 +94,7 @@ def _render(text: str):
 def _fetch_matchups_cached(_league_id: int, _year: int, _week: int):
     return get_week_matchups(_league_id, _year, _week)
 
-# -------------------- PDF Export Helpers (Markdown → PDF) --------------------
-# Uses markdown -> HTML and xhtml2pdf (pure-Python) to produce a PDF.
-# Note: Emoji rendering depends on available fonts; if a glyph is missing,
-# PDF viewers may show a box for that character.
+# ---------- PDF Export Helpers (Markdown → PDF) ----------
 def _md_to_pdf_bytes(md_text: str, title: str = "Weekly Preview") -> bytes:
     try:
         from markdown import markdown as md_to_html
@@ -108,7 +106,6 @@ def _md_to_pdf_bytes(md_text: str, title: str = "Weekly Preview") -> bytes:
         ) from e
 
     import io
-
     _DEF_CSS = """
     @page { size: letter; margin: 0.6in; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.35; color: #111; }
@@ -126,9 +123,8 @@ def _md_to_pdf_bytes(md_text: str, title: str = "Weekly Preview") -> bytes:
     table { border-collapse: collapse; width: 100%; margin: 0.4em 0; }
     th, td { border: 1px solid #ddd; padding: 6px 8px; font-size: 10pt; }
     th { background: #f2f4f7; text-align: left; }
+    img.logo { height: 22px; vertical-align: middle; margin-right: 6px; }
     """
-
-    # Convert markdown → HTML
     body_html = md_to_html(md_text or "", extensions=["tables", "fenced_code"])
     html = f"""<!doctype html>
 <html>
@@ -141,16 +137,38 @@ def _md_to_pdf_bytes(md_text: str, title: str = "Weekly Preview") -> bytes:
 {body_html}
 </body>
 </html>"""
-
     out = io.BytesIO()
-    # xhtml2pdf accepts a string as src and writes to a binary stream
     pisa_status = pisa.CreatePDF(src=html, dest=out)
     if pisa_status.err:
         raise RuntimeError("xhtml2pdf failed to create PDF.")
     out.seek(0)
     return out.read()
 
-# -------------------- Main Recap action (UNCHANGED) --------------------
+# ---------- Recap “spice” (emojis + light puns without changing recap logic) ----------
+def _spice_up_recap(md_text: str, week_val: int) -> str:
+    if not md_text:
+        return md_text
+    lines = md_text.splitlines()
+    out = []
+    inserted_banner = False
+    for i, line in enumerate(lines):
+        if not inserted_banner and i == 0:
+            out.append(f"# 🏈🔥 Weekly Recap — Week {week_val} 🔥🏈")
+            out.append("")
+            inserted_banner = True
+        # add emojis to headings
+        if line.startswith("#"):
+            line = re.sub(r"^(#+\s*)(.*)$", lambda m: f"{m.group(1)}{m.group(2)} 🏈💥", line)
+        out.append(line)
+    text = "\n".join(out)
+    # tasteful sprinkle
+    text = text.replace("MVP", "MVP ⭐")
+    text = text.replace("Upset", "Upset 🚨")
+    text = text.replace("stud", "stud 🌟")
+    text = text.replace("boom", "boom 💣")
+    return text
+
+# -------------------- Main Recap action (generator unchanged) --------------------
 disabled = _import_error is not None or not bool(os.getenv("OPENAI_API_KEY"))
 if st.button("Generate Weekly Recap", type="primary", disabled=disabled):
     if _import_error:
@@ -186,7 +204,6 @@ if st.button("Generate Weekly Recap", type="primary", disabled=disabled):
             st.write(matchups)
 
         try:
-            # Support either summarizer signature
             try:
                 recap = generate_week_recap(matchups, league_id=int(league_id), year=int(year), week=int(week))
             except TypeError:
@@ -196,6 +213,9 @@ if st.button("Generate Weekly Recap", type="primary", disabled=disabled):
             with st.expander("Error details"):
                 st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
             st.stop()
+
+    # spice it up (non-destructive)
+    recap = _spice_up_recap(recap, int(week))
 
     st.success("Recap generated!")
     _render(recap)

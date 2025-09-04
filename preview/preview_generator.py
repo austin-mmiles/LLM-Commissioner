@@ -216,38 +216,46 @@ def _projection_source() -> str:
 
 def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """
-    Style: energetic, pun-friendly, emoji-sprinkled, no owners.
+    Style: energetic, emoji-heavy (tasteful), pun-friendly. No owners.
     EVERY matchup uses the same detailed format; the featured one simply gets a ⭐ marker and appears first.
 
+    OUTPUT MUST BE VALID HTML (you may embed Markdown text, but wrap it in HTML). 
+    Use small logos with <img class="logo"> elements next to team names.
+
     For each matchup (featured first, then the rest):
-    ## {star_if_featured} Matchup: <Team A> (<Record A>) vs <Team B> (<Record B>) 🏈
-    _Edge:_ <Favorite or Pick'em> by <edge>
 
-    ### At-a-glance
-    - **Records:** <Team A> (<Record A>) vs <Team B> (<Record B>)
-    - **Projected spread (starters-only):** <if Pick'em then "Pick'em"; else "<Favorite> by <edge>">
-    - **Key players — <Team A>:** <P1 (Pos, Pts)>, <P2 (Pos, Pts)>, <P3 (Pos, Pts)>, <P4 (Pos, Pts)>
-    - **Key players — <Team B>:** <P1 (Pos, Pts)>, <P2 (Pos, Pts)>, <P3 (Pos, Pts)>, <P4 (Pos, Pts)>
+    <h2>{star_if_featured} Matchup: 
+        <img src="<home.logo>" class="logo"> <home.team> (<home.record>) 
+        vs 
+        <img src="<away.logo>" class="logo"> <away.team> (<away.record>) 
+        🏈
+    </h2>
+    <p><em>Edge:</em> <strong><favorite or Pick'em> by <edge></strong></p>
 
-    Based on projections from {SOURCE}, <Team A> can expect a <TopPlayerPoints> point effort from <Top Player> in week <W> —
-    if they execute, they could really move the chains. Add 1–2 short, playful puns or football idioms. Use 1–3 emojis (e.g., 🔥⚡️📈).
-    "<short, realistic pre-game quote> ," The <Team A> coach says.
+    <!-- TOP STARTERS AT A GLANCE (new, top of section) -->
+    <p><strong>Top starters — <home.team>:</strong> P1 (Pos, Pts), P2 (Pos, Pts), P3 (Pos, Pts), P4 (Pos, Pts)</p>
+    <p><strong>Top starters — <away.team>:</strong> P1 (Pos, Pts), P2 (Pos, Pts), P3 (Pos, Pts), P4 (Pos, Pts)</p>
 
-    Based on projections from {SOURCE}, <Team B> can expect a <TopPlayerPoints> point effort from <Top Player> in week <W> —
-    they'll need crisp drives and clean pockets to stay on schedule. Add 1–2 short, playful puns or football idioms. Use 1–3 emojis.
-    "<short, realistic pre-game quote> ," The <Team B> coach says.
+    <p>Based on projections from {SOURCE}, <home.team> can expect a <TopPlayerPoints> point spark from <Top Player> in week {W} — 
+       if they execute, they might keep the chains humming. Add 1–2 short, playful puns/idioms and 1–3 emojis (🔥⚡️📈).</p>
+    <p>"<short, realistic pre-game quote> ," The <home.team> coach says.</p>
 
-    Finish with one short hype sentence for the matchup (pun encouraged). Do NOT invent schedules/history you weren't given.
+    <p>Based on projections from {SOURCE}, <away.team> can expect a <TopPlayerPoints> point jolt from <Top Player> in week {W} — 
+       they'll need crisp drives and clean pockets to stay on schedule. Add 1–2 short, playful puns/idioms and 1–3 emojis.</p>
+    <p>"<short, realistic pre-game quote> ," The <away.team> coach says.</p>
 
-    STRICT rules:
-    - Use ONLY the provided data (team names/records, the four highest-projected starters per team, numeric edge, favorite).
+    <p><em>Final whistle:</em> write one short hype sentence for the matchup (pun encouraged). 
+       Do NOT invent schedules/history you weren't given. Never show team totals or combined totals.</p>
+
+    STRICT RULES:
+    - Use ONLY the provided data (team names/records/logos, four highest-projected starters per team with points, numeric edge, favorite).
     - Mention exactly four starters per team (if fewer available, list what's provided).
     - Never show team total or combined points; combined is ONLY for selecting the featured matchup.
     - Never use owner names; attribute quotes generically to “The <Team> coach says.”
-    - Quotes must be *original*, brief, and realistic coach-speak (not verbatim from real people), formatted EXACTLY as:
+    - Quotes must be original, brief, realistic coach-speak (not verbatim from real people), formatted EXACTLY as:
       "<quote text> ," The <Team Name> coach says.
-      (Note: include a space before the comma inside the quotes, then close the quote, then space, then 'The <Team> coach says.')
-    - Keep it concise, with light emojis and a couple of puns—don’t overdo it.
+      (Note: include a space before the comma inside the quotes, then close the quote, then a space, then 'The <Team> coach says.')
+    - Keep it concise, fun, with a few emojis and puns—don’t overdo it.
     """
     import json
 
@@ -265,14 +273,16 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
             "home": {
                 "team": m["home"]["team_name"],
                 "record": m["home"]["record"],
+                "logo": m["home"]["logo"],
                 "streak": m["home"]["streak"],
-                "top_players": m["home"]["top_players_list"],  # list of up to 4 dicts
+                "top_players": m["home"]["top_players_list"],  # up to 4 dicts
             },
             "away": {
                 "team": m["away"]["team_name"],
                 "record": m["away"]["record"],
+                "logo": m["away"]["logo"],
                 "streak": m["away"]["streak"],
-                "top_players": m["away"]["top_players_list"],  # list of up to 4 dicts
+                "top_players": m["away"]["top_players_list"],  # up to 4 dicts
             }
         }
         if item["featured"]:
@@ -296,13 +306,14 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
 
     system = (
         "You are LLM-Commissioner, writing WEEKLY PREVIEWS that are lively and fan-friendly. "
+        "Output valid HTML (you may embed Markdown text inside HTML blocks). "
         "Do not invent facts beyond the input. Keep paragraphs tight and exciting. "
-        "No owner names. Do NOT display any team total or combined points. Use a couple of fun puns."
-        "Use emojis sparingly to enhance the fun tone."
+        "No owner names. Do NOT display any team total or combined points. "
+        "Use a couple of fun puns and emojis."
     )
 
     user = {
-        "instructions": "Generate the Markdown preview using the format and constraints above.",
+        "instructions": "Generate the HTML preview using the format and constraints above.",
         "data": payload
     }
 
@@ -320,18 +331,18 @@ def generate_week_preview_from_cards(
     league_id: int,
     year: int,
     week: int,
-    temperature: float = 0.9,
-    max_tokens: int = 2600,
+    temperature: float = 0.92,
+    max_tokens: int = 2800,
     presence_penalty: float = 0.2,
-    frequency_penalty: float = 0.1,
+    frequency_penalty: float = 0.15,
 ) -> str:
     """
-    Create a single Markdown preview:
+    Create a single HTML preview:
     - ⭐ Featured matchup first (highest combined starters; not displayed)
     - Same detailed structure for EVERY matchup
-    - At-a-glance section (records, projected spread, key players with points)
-    - Top 4 starters per team shown
+    - Top 4 starters per team at the top of each section
     - One coach quote per team (formatted exactly)
+    - Records + logos next to team names
     - Emojis + puns to keep it fun
     - No combined totals displayed
     """
@@ -355,15 +366,15 @@ def generate_week_preview(
     week: int,
     espn_s2: str | None = None,
     swid: str | None = None,
-    temperature: float = 0.9,
-    max_tokens: int = 2600,
+    temperature: float = 0.92,
+    max_tokens: int = 2800,
 ) -> str:
     """
-    One-call convenience for the Streamlit app: fetch → LLM → Markdown.
+    One-call convenience for the Streamlit app: fetch → LLM → HTML doc.
     """
     cards = build_weekly_preview_cards(league_id, year, week, espn_s2=espn_s2, swid=swid)
     if not cards:
-        return f"# Weekly Preview (Week {week})\n\n_No matchups found for this week._"
+        return f"<h1>Weekly Preview (Week {week})</h1><p><em>No matchups found for this week.</em></p>"
     return generate_week_preview_from_cards(
         cards, league_id, year, week, temperature=temperature, max_tokens=max_tokens
     )
