@@ -1,6 +1,7 @@
 # app.py
 import os
 import traceback
+from preview.preview_generator import build_weekly_preview
 
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "poll"
 os.environ["STREAMLIT_SERVER_RUN_ON_SAVE"] = "false"
@@ -152,3 +153,45 @@ if disabled:
     if not bool(os.getenv("OPENAI_API_KEY")):
         msgs.append("OPENAI_API_KEY missing")
     st.info("Generate button disabled: " + ", ".join(msgs))
+    
+st.header("Weekly Preview")
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    league_id = st.number_input("League ID", min_value=1, step=1, format="%d")
+with col2:
+    year = st.number_input("Season (year)", min_value=2015, max_value=2100, value=2025, step=1)
+with col3:
+    week = st.number_input("Week", min_value=1, max_value=18, value=1, step=1)
+
+# If your league is private, read cookies from env / secrets
+espn_s2 = os.getenv("ESPN_S2", None)
+swid = os.getenv("ESPN_SWID", None)
+
+if st.button("Build Weekly Preview"):
+    try:
+        cards = build_weekly_preview(int(league_id), int(year), int(week), espn_s2=espn_s2, swid=swid)
+        if not cards:
+            st.warning("No matchups found for this week.")
+        for card in cards:
+            m = card["matchup"]
+            c1, c2 = st.columns(2)
+            with c1:
+                st.image(m["home"]["logo"], width=80)
+                st.subheader(f"{m['home']['team_name']} ({m['home']['record']})")
+                st.caption(f"Owner: {m['home']['owner']} • Streak: {m['home']['streak']}")
+                st.write(f"Projected: **{m['home']['proj']:.2f}**")
+                st.write(m["home"]["top_players"])
+                st.info(f"Quote: {card['quotes']['home']}")
+            with c2:
+                st.image(m["away"]["logo"], width=80)
+                st.subheader(f"{m['away']['team_name']} ({m['away']['record']})")
+                st.caption(f"Owner: {m['away']['owner']} • Streak: {m['away']['streak']}")
+                st.write(f"Projected: **{m['away']['proj']:.2f}**")
+                st.write(m["away"]["top_players"])
+                st.info(f"Quote: {card['quotes']['away']}")
+            st.success(f"Headline: {card['headline']}")
+            st.write(card["blurb"])
+            st.divider()
+    except Exception as e:
+        st.error(f"Preview failed: {e}")
