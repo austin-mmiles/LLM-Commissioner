@@ -37,7 +37,7 @@ class TeamWeekProjection:
     team_name: str
     owner_name: str
     logo_url: str
-    projected_points: float  # SUM OF STARTERS ONLY
+    projected_points: float  # SUM OF STARTERS ONLY (not displayed; used only to pick featured matchup)
     top_players: List[PlayerProj]  # STARTERS ONLY
     meta: TeamMeta
 
@@ -48,19 +48,44 @@ class TeamWeekProjection:
 def _load_league(league_id: int, year: int, espn_s2: str | None, swid: str | None) -> League:
     return League(league_id=league_id, year=year, espn_s2=espn_s2, swid=swid)
 
-def _safe_owner_name(t) -> str:
+def _best_owner_name(team) -> str:
     """
-    ESPN sometimes exposes t.owner as a string, object, or None.
-    We avoid abbreviations; if it's not human-friendly, fall back to 'Coach of <Team>'.
+    Robustly derive a human-friendly owner name from the espn_api Team object.
+
+    Preferred (private leagues with cookies):
+      team.owners -> list[dict] with keys like displayName, firstName, lastName.
+    Fallbacks:
+      team.owner (legacy string on some versions)
+      "Coach of <Team Name>"
     """
-    owner = getattr(t, "owner", None)
-    label = None
-    if isinstance(owner, str):
-        label = owner.strip()
-    if label and not (len(label) <= 3 or (label.isupper() and len(label) <= 5)):
-        return label
-    team = getattr(t, "team_name", "the team")
-    return f"Coach of {team}"
+    owners = getattr(team, "owners", None)
+    if isinstance(owners, list) and owners:
+        od = owners[0] or {}
+
+        # owners can be dicts or lightweight objects; handle both
+        def get_val(src, key):
+            if isinstance(src, dict):
+                return src.get(key)
+            return getattr(src, key, None)
+
+        display = get_val(od, "displayName")
+        first = get_val(od, "firstName")
+        last = get_val(od, "lastName")
+
+        if display and str(display).strip():
+            return str(display).strip()
+        name = " ".join([n for n in [first, last] if n])
+        if name.strip():
+            return name.strip()
+
+    legacy = getattr(team, "owner", None)
+    if isinstance(legacy, str) and legacy.strip():
+        # Avoid cryptic all-caps 2–4 letter handles looking like abbreviations
+        val = legacy.strip()
+        if not (len(val) <= 3 or (val.isupper() and len(val) <= 5)):
+            return val
+
+    return f"Coach of {getattr(team, 'team_name', 'the team')}"
 
 def _get_team_meta(league: League) -> Dict[int, TeamMeta]:
     meta: Dict[int, TeamMeta] = {}
@@ -69,7 +94,7 @@ def _get_team_meta(league: League) -> Dict[int, TeamMeta]:
         meta[t.team_id] = TeamMeta(
             team_id=t.team_id,
             team_name=str(t.team_name),
-            owner_name=_safe_owner_name(t),
+            owner_name=_best_owner_name(t),  # <<< use ESPN owners
             logo_url=str(getattr(t, "logo_url", "") or ""),
             record=record,
             points_for=float(getattr(t, "points_for", 0.0) or 0.0),
@@ -89,7 +114,7 @@ def _get_week_pairs(league: League, week: int) -> List[Tuple[int, int]]:
 def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dict[int, TeamMeta]) -> TeamWeekProjection:
     """
     Build a team projection for THIS WEEK from STARTERS ONLY.
-    - Sum projected points for starters only
+    - Sum projected points for starters only (not displayed)
     - Top players = starters sorted by projected points desc
     """
     box_scores = league.box_scores(week=week)
@@ -131,7 +156,7 @@ def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dic
         team_name=tm.team_name,
         owner_name=tm.owner_name,
         logo_url=tm.logo_url,
-        projected_points=round(projected_points, 2),
+        projected_points=round(projected_points, 2),  # used internally only
         top_players=top_players,
         meta=tm,
     )
@@ -140,6 +165,18 @@ def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dic
 # ===============================
 # Build "cards" for UI + LLM
 # ===============================
+def _edge_label(edge_points: float) -> str:
+    # Qualitative edge (avoid numeric display in prose)
+    if edge_points <= 2:
+        return "pick'em"
+    if edge_points <= 5:
+        return "a slight edge"
+    if edge_points <= 10:
+        return "a modest edge"
+    if edge_points <= 20:
+        return "a solid edge"
+    return "a heavy edge"
+
 def build_weekly_preview_cards(
     league_id: int,
     year: int,
@@ -170,31 +207,31 @@ def build_weekly_preview_cards(
 
         cards.append({
             "matchup": {
+                # NOTE: we will not display numeric edges or totals in prose
                 "favorite": favorite.team_name if edge != 0 else "Pick'em",
-                "edge_points": edge,
-                "combined_proj_starters": combined,    # for "Game of the Week"
+                "edge_points": edge,                      # numeric stored for label computation only
+                "edge_label": _edge_label(edge),          # qualitative; safe to display
+                "combined_proj_starters": combined,       # used only to pick featured matchup
                 "home": {
-                    "team_name": h.team_name,          # no abbreviations
+                    "team_name": h.team_name,             # no abbreviations
                     "owner": h.owner_name,
                     "logo": h.logo_url,
-                    "proj": h.projected_points,        # starters only
                     "record": h.meta.record,
                     "streak": h.meta.streak,
-                    "top_players_list": players_list(h),
+                    "top_players_list": players_list(h),  # starters-only top players
                 },
                 "away": {
                     "team_name": a.team_name,
                     "owner": a.owner_name,
                     "logo": a.logo_url,
-                    "proj": a.projected_points,        # starters only
                     "record": a.meta.record,
                     "streak": a.meta.streak,
-                    "top_players_list": players_list(a),
+                    "top_players_list": players_list(a),  # starters-only top players
                 },
             }
         })
 
-    # Flag the Game of the Week: highest combined starters projection
+    # Flag the Matchup of the Week: highest combined starters projection
     if cards:
         best_idx = max(
             range(len(cards)),
@@ -219,54 +256,42 @@ def _default_model() -> str:
     return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 def _projection_source() -> str:
-    # Cosmetic label to match your league vibe (e.g., "Fantasy Sharks")
+    # Cosmetic label to match your league vibe (e.g., "Fantasy Sharks", "ESPN")
     return os.getenv("PREVIEW_PROJECTION_SOURCE", "ESPN")
-
-def _gif_library() -> List[str]:
-    """
-    Small, evergreen football/hype GIFs to embed. The LLM picks one per matchup.
-    NOTE: These are public Giphy links commonly used on the web.
-    """
-    return [
-        "https://media.giphy.com/media/3o7qE1YN7aBOFPRw8E/giphy.gif",
-        "https://media.giphy.com/media/l0HUpt2s9Pclgt9Vm/giphy.gif",
-        "https://media.giphy.com/media/26Ff1rQGQ6Gfm5QDe/giphy.gif",
-    ]
 
 
 def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """
-    Style: energetic, pun-friendly, readable, with emojis + 1 GIF per matchup.
-    Output for EACH matchup:
-      ## <⭐ Game of the Week> Matchup: Team A (record) vs Team B (record)
-      **Edge:** <Favorite or Pick'em> by <edge> • **Combined starters:** <combined>
-      Team A paragraph:
-        - Start with: "Based on projections from {SOURCE}, <Team A> can expect a **<TEAM_PROJ>** point effort in week <W>, led by <Headliner>..."
-        - Include a short 1–2 line coach-style quote in *italics*, attributed like: — <Team A> coach <Owner Name>
-        - Add a couple of fun emojis (🏈🔥⚡️💥 etc). Keep it tasteful (1–3 per paragraph).
-      Team B paragraph: same pattern.
-      One-line closer: hype the matchup; do NOT invent any history; you can use a playful pun.
-      GIF: Embed ONE of the provided GIF URLs below using Markdown: ![hype](<gif_url>)
+    Style: energetic, pun-friendly, readable, with tasteful emojis.
+    IMPORTANT: Do NOT show team total projected points anywhere.
+    Featured section FIRST: the matchup marked is_featured=True (highest combined starters).
+    Output format:
+      # ⭐ Matchup of the Week
+      ## <Team A> (<Record A>) vs <Team B> (<Record B>)
+      _Edge:_ <Favorite> (<qualitative edge: slight/modest/solid/heavy/pick'em>)
+      - Paragraph for Team A: start with "Based on projections from {SOURCE}, <Team A> leans on <Headliner Name> ..."
+        Include a realistic pre-game coach quote in *italics*, attributed as: — <Team A> coach <Owner Name>. Use 1–3 emojis tastefully.
+      - Paragraph for Team B: same pattern.
+      - One-sentence closer: hype the game; no invented history.
+      
+      # Other Matchups
+      Then repeat the same structure (## header, edge line, two short paragraphs + closer) for the remaining games.
+      
     Constraints:
-      - Use ONLY the provided data (teams, owner names, records, streaks, starter-only projections, favorite/edge).
-      - Never use team abbreviations; always use full team names and owner names.
-      - Quotes must sound like realistic pre-game coach/player lines (focus, execution, next play, respect the opponent).
-      - Keep paragraphs compact and easy to scan.
+      - Use ONLY provided data (teams, owner names, records, streaks, top players with their individual projections).
+      - You may reference individual player projection numbers, but NEVER a team total projection.
+      - Never use team abbreviations; always full team and owner names.
+      - Quotes must sound like realistic pre-game coach/player lines (focus, execution, respect the opponent). No profanity.
     """
     import json
 
     source = _projection_source()
 
-    # compact payload for the LLM
-    payload = {
-        "league_id": league_id,
-        "season": year,
-        "week": week,
-        "projection_source": source,
-        "gif_options": _gif_library(),
-        "matchups": []
-    }
+    # Build a clean payload for the LLM; exclude team total projections entirely
+    featured = None
+    others: List[Dict[str, Any]] = []
 
+    # Prepare per-matchup dicts for the LLM (no team totals, no numeric edge)
     for c in cards:
         m = c["matchup"]
 
@@ -275,20 +300,16 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
 
         home_tp = m["home"].get("top_players_list", [])
         away_tp = m["away"].get("top_players_list", [])
-        featured = bool(m.get("is_featured", False))
 
-        payload["matchups"].append({
-            "featured": featured,
+        item = {
             "favorite": m["favorite"],
-            "edge": m["edge_points"],
-            "combined_proj_starters": m.get("combined_proj_starters", 0.0),
+            "edge_label": m.get("edge_label", "pick'em"),  # qualitative only
             "home": {
                 "team": m["home"]["team_name"],
                 "owner": m["home"]["owner"],
                 "record": m["home"]["record"],
                 "streak": m["home"]["streak"],
-                "proj": m["home"]["proj"],                 # starters-only team total
-                "top_players": home_tp,                    # starters-only top players
+                "top_players": home_tp,
                 "headliner": headliner(home_tp),
             },
             "away": {
@@ -296,29 +317,34 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
                 "owner": m["away"]["owner"],
                 "record": m["away"]["record"],
                 "streak": m["away"]["streak"],
-                "proj": m["away"]["proj"],                 # starters-only team total
-                "top_players": away_tp,                    # starters-only top players
+                "top_players": away_tp,
                 "headliner": headliner(away_tp),
             }
-        })
+        }
+
+        if m.get("is_featured"):
+            featured = item
+        else:
+            others.append(item)
+
+    payload = {
+        "league_id": league_id,
+        "season": year,
+        "week": week,
+        "projection_source": source,
+        "featured_matchup": featured,
+        "other_matchups": others,
+    }
 
     system = (
         "You are LLM-Commissioner, a witty sports writer crafting a WEEKLY PREVIEW for a fantasy football league. "
         "Write with energy, tasteful emojis, and playful puns while staying league-safe. "
-        "Be concise and highly readable: short paragraphs, bold key numbers, and clear edges. "
-        "Quotes must sound like realistic pre-game coach/player lines (no profanity or insults). "
-        "Never invent facts beyond the provided data."
+        "Be concise and highly readable: short paragraphs and clear edges. "
+        "Do NOT display any team total projected points."
     )
 
     user = {
-        "instructions": "Generate a Markdown preview for each matchup using the specified format and constraints.",
-        "format": {
-            "section_header": "## {maybe_star} Matchup: <Team A> (<Record A>) vs <Team B> (<Record B>)",
-            "edge_line": "**Edge:** <Favorite or Pick'em> by <edge> • **Combined starters:** <combined>",
-            "team_paragraphs": 2,
-            "closer_line": "1 short hype sentence; no invented history.",
-            "gif_md": "![hype](<one_gif_url>)"
-        },
+        "instructions": "Generate a Markdown preview using the format and constraints above.",
         "data": payload
     }
 
@@ -343,7 +369,7 @@ def generate_week_preview_from_cards(
 ) -> str:
     """
     Create a single Markdown preview document with lively, punny copy, realistic coach quotes,
-    emojis, one GIF per matchup, records included, and a ⭐ Game of the Week.
+    emojis, and a ⭐ Matchup of the Week at the top. Team totals are NEVER shown.
     """
     client = _openai_client()
     model = _default_model()
