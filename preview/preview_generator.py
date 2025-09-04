@@ -10,13 +10,12 @@ from espn_api.football import League
 
 
 # ===============================
-# Data types
+# Data types (no owner fields)
 # ===============================
 @dataclass
 class TeamMeta:
     team_id: int
     team_name: str
-    owner_name: str
     logo_url: str
     record: str
     points_for: float
@@ -35,7 +34,6 @@ class PlayerProj:
 class TeamWeekProjection:
     team_id: int
     team_name: str
-    owner_name: str
     logo_url: str
     projected_points: float  # SUM OF STARTERS ONLY (internal; not displayed)
     top_players: List[PlayerProj]  # STARTERS ONLY
@@ -48,36 +46,6 @@ class TeamWeekProjection:
 def _load_league(league_id: int, year: int, espn_s2: str | None, swid: str | None) -> League:
     return League(league_id=league_id, year=year, espn_s2=espn_s2, swid=swid)
 
-def _best_owner_name(team) -> str:
-    """
-    Prefer Team.owners[0].displayName / first+last when available (private leagues with cookies).
-    Fall back to legacy team.owner; otherwise 'Coach of <Team>'.
-    """
-    owners = getattr(team, "owners", None)
-    if isinstance(owners, list) and owners:
-        od = owners[0] or {}
-        def get_val(src, key):
-            if isinstance(src, dict):
-                return src.get(key)
-            return getattr(src, key, None)
-        display = get_val(od, "displayName")
-        first = get_val(od, "firstName")
-        last  = get_val(od, "lastName")
-        if display and str(display).strip():
-            return str(display).strip()
-        name = " ".join([n for n in [first, last] if n])
-        if name.strip():
-            return name.strip()
-
-    legacy = getattr(team, "owner", None)
-    if isinstance(legacy, str) and legacy.strip():
-        val = legacy.strip()
-        # Avoid cryptic all-caps 2–4 letter handles that read like abbreviations
-        if not (len(val) <= 3 or (val.isupper() and len(val) <= 5)):
-            return val
-
-    return f"Coach of {getattr(team, 'team_name', 'the team')}"
-
 def _get_team_meta(league: League) -> Dict[int, TeamMeta]:
     meta: Dict[int, TeamMeta] = {}
     for t in league.teams:
@@ -85,7 +53,6 @@ def _get_team_meta(league: League) -> Dict[int, TeamMeta]:
         meta[t.team_id] = TeamMeta(
             team_id=t.team_id,
             team_name=str(t.team_name),
-            owner_name=_best_owner_name(t),
             logo_url=str(getattr(t, "logo_url", "") or ""),
             record=record,
             points_for=float(getattr(t, "points_for", 0.0) or 0.0),
@@ -145,7 +112,6 @@ def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dic
     return TeamWeekProjection(
         team_id=team_id,
         team_name=tm.team_name,
-        owner_name=tm.owner_name,
         logo_url=tm.logo_url,
         projected_points=round(projected_points, 2),  # internal only
         top_players=top_players,
@@ -154,7 +120,7 @@ def _get_team_week_projection(league: League, week: int, team_id: int, meta: Dic
 
 
 # ===============================
-# Build "cards" for UI + LLM
+# Build "cards" for UI + LLM (no owner fields)
 # ===============================
 def build_weekly_preview_cards(
     league_id: int,
@@ -192,7 +158,6 @@ def build_weekly_preview_cards(
                 "combined_proj_starters": combined,      # internal only (for featured)
                 "home": {
                     "team_name": h.team_name,            # no abbreviations
-                    "owner": h.owner_name,
                     "logo": h.logo_url,
                     "record": h.meta.record,
                     "streak": h.meta.streak,
@@ -200,7 +165,6 @@ def build_weekly_preview_cards(
                 },
                 "away": {
                     "team_name": a.team_name,
-                    "owner": a.owner_name,
                     "logo": a.logo_url,
                     "record": a.meta.record,
                     "streak": a.meta.streak,
@@ -240,32 +204,31 @@ def _projection_source() -> str:
 
 def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """
-    Style: energetic, pun-friendly, readable, with tasteful emojis.
-    IMPORTANT: Do NOT show the combined points anywhere (they're for picking the featured matchup only).
-    Featured section FIRST: the matchup marked is_featured=True (highest combined starters).
-    Output format:
-      # ⭐ Matchup of the Week
-      ## <Team A> (<Record A>) vs <Team B> (<Record B>)
-      _Edge:_ <Favorite or Pick'em> by <edge>
-      - Paragraph for Team A: start with "Based on projections from {SOURCE}, <Team A> leans on <Headliner Name> ..."
-        Include a short, realistic pre-game quote in *italics*, attributed as: — <Team A> coach <Owner Name>. Use 1–3 emojis tastefully.
-      - Paragraph for Team B: same pattern (also include a quote for this team).
-      - One-sentence closer: hype the game; no invented history.
+    Output style modeled after the user's example, WITHOUT owner names:
 
-      # Other Matchups
-      Repeat the same structure (## header, edge line, two short paragraphs with one quote each + closer) for remaining games.
+    For the featured matchup (highest combined starters), then each remaining matchup:
 
-    Constraints:
-      - Use ONLY provided data (teams, owner names, records, streaks, top players with their individual projections).
-      - You may reference individual player projection numbers, but NEVER any team total.
-      - Never use team abbreviations; always full team and owner names.
-      - Every team gets ONE quote that sounds like a typical pre-game coach/player comment (focus, execution, respect the opponent). No profanity.
+    ## Matchup: Team A (Record A) vs Team B (Record B)
+    Based on projections from {SOURCE}, Team A can expect a <POINTS> point effort from <Top Player> in week <W>, with a nod to 1–2 other key players.
+    "<short, realistic pre-game quote>," the Team A coach said.
+
+    Based on projections from {SOURCE}, Team B can expect a <POINTS> point effort from <Top Player> in week <W>, with a nod to 1–2 other key players.
+    "<short, realistic pre-game quote>," the Team B coach said.
+
+    Finish with one short hype sentence. Do NOT invent schedules/history details you were not given.
+
+    Rules:
+    - Use ONLY data provided (team names/records, top players with their individual projections, edge label).
+    - Mention 1–2 key players (prioritize the highest projected "headliner" and optionally one more).
+    - NEVER use owner names or any personal names.
+    - Do not display any team total projection.
+    - Keep it fun, punchy, and readable.
     """
     import json
 
     source = _projection_source()
 
-    # Split featured vs others (combined used upstream; we don't include it in text)
+    # Split featured vs others (combined used upstream; we don't include combined in text)
     featured = None
     others: List[Dict[str, Any]] = []
 
@@ -280,10 +243,9 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
 
         item = {
             "favorite": m["favorite"],
-            "edge_points": m["edge_points"],  # numeric OK to display
+            "edge_points": m["edge_points"],  # may be used in phrasing "edge: X"
             "home": {
                 "team": m["home"]["team_name"],
-                "owner": m["home"]["owner"],
                 "record": m["home"]["record"],
                 "streak": m["home"]["streak"],
                 "top_players": home_tp,
@@ -291,7 +253,6 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
             },
             "away": {
                 "team": m["away"]["team_name"],
-                "owner": m["away"]["owner"],
                 "record": m["away"]["record"],
                 "streak": m["away"]["streak"],
                 "top_players": away_tp,
@@ -314,14 +275,13 @@ def _preview_prompt(league_id: int, year: int, week: int, cards: List[Dict[str, 
     }
 
     system = (
-        "You are LLM-Commissioner, a witty sports writer crafting a WEEKLY PREVIEW for a fantasy football league. "
-        "Write with energy, tasteful emojis, and playful puns while staying league-safe. "
-        "Be concise and highly readable: short paragraphs and clear edges. "
-        "Never display combined team totals; they are not part of the copy."
+        "You are LLM-Commissioner, writing WEEKLY PREVIEWS in lively, fan-friendly prose. "
+        "No owner names; refer to 'the Team X coach' generically in quotes attribution. "
+        "Do not invent facts beyond the input. Keep paragraphs tight and exciting."
     )
 
     user = {
-        "instructions": "Generate a Markdown preview using the format and constraints above.",
+        "instructions": "Generate the Markdown preview using the format and constraints above.",
         "data": payload
     }
 
@@ -339,17 +299,17 @@ def generate_week_preview_from_cards(
     league_id: int,
     year: int,
     week: int,
-    temperature: float = 0.95,
+    temperature: float = 0.9,
     max_tokens: int = 2200,
     presence_penalty: float = 0.2,
     frequency_penalty: float = 0.1,
 ) -> str:
     """
-    Create a single Markdown preview with lively, punny copy and a ⭐ Matchup of the Week on top.
-    - GIFs removed entirely
-    - Edge & featured selection computed from STARTERS ONLY
-    - Combined points never displayed
-    - Each team includes a realistic pre-game quote
+    Create a single Markdown preview with:
+    - ⭐ Featured matchup first (highest combined starters)
+    - Two team paragraphs per matchup, each with a coach quote (no names)
+    - Mentions of 1–2 top players with their projection numbers
+    - No combined totals displayed
     """
     client = _openai_client()
     model = _default_model()
@@ -371,7 +331,7 @@ def generate_week_preview(
     week: int,
     espn_s2: str | None = None,
     swid: str | None = None,
-    temperature: float = 0.95,
+    temperature: float = 0.9,
     max_tokens: int = 2200,
 ) -> str:
     """
