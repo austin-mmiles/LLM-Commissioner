@@ -93,6 +93,63 @@ def _render(text: str):
 def _fetch_matchups_cached(_league_id: int, _year: int, _week: int):
     return get_week_matchups(_league_id, _year, _week)
 
+# -------------------- PDF Export Helpers (Markdown → PDF) --------------------
+# Uses markdown -> HTML and xhtml2pdf (pure-Python) to produce a PDF.
+# Note: Emoji rendering depends on available fonts; if a glyph is missing,
+# PDF viewers may show a box for that character.
+def _md_to_pdf_bytes(md_text: str, title: str = "Weekly Preview") -> bytes:
+    try:
+        from markdown import markdown as md_to_html
+        from xhtml2pdf import pisa
+    except Exception as e:
+        raise RuntimeError(
+            "PDF dependencies missing. Please add to requirements.txt: "
+            "'markdown>=3.6' and 'xhtml2pdf>=0.2.13'"
+        ) from e
+
+    import io
+
+    _DEF_CSS = """
+    @page { size: letter; margin: 0.6in; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.35; color: #111; }
+    h1, h2, h3 { color: #0b3558; margin-top: 0.8em; }
+    h1 { font-size: 22pt; }
+    h2 { font-size: 16pt; }
+    h3 { font-size: 13pt; }
+    p  { font-size: 11pt; margin: 0.4em 0; }
+    ul, ol { margin: 0.3em 0 0.5em 1.2em; }
+    li { margin: 0.15em 0; }
+    code, pre { background: #f6f8fa; font-size: 10pt; }
+    blockquote { color: #444; border-left: 3px solid #ddd; margin: 0.5em 0; padding: 0.1em 0 0.1em 0.8em; }
+    hr { border: none; border-top: 1px solid #ddd; margin: 0.8em 0; }
+    strong { color: #0b3558; }
+    table { border-collapse: collapse; width: 100%; margin: 0.4em 0; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; font-size: 10pt; }
+    th { background: #f2f4f7; text-align: left; }
+    """
+
+    # Convert markdown → HTML
+    body_html = md_to_html(md_text or "", extensions=["tables", "fenced_code"])
+    html = f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<style>{_DEF_CSS}</style>
+</head>
+<body>
+{body_html}
+</body>
+</html>"""
+
+    out = io.BytesIO()
+    # xhtml2pdf accepts a string as src and writes to a binary stream
+    pisa_status = pisa.CreatePDF(src=html, dest=out)
+    if pisa_status.err:
+        raise RuntimeError("xhtml2pdf failed to create PDF.")
+    out.seek(0)
+    return out.read()
+
 # -------------------- Main Recap action (UNCHANGED) --------------------
 disabled = _import_error is not None or not bool(os.getenv("OPENAI_API_KEY"))
 if st.button("Generate Weekly Recap", type="primary", disabled=disabled):
@@ -207,9 +264,24 @@ if st.button("Build Weekly Preview", type="secondary", disabled=not bool(os.gete
     st.success("Weekly Preview generated!")
     _render(preview_doc)
 
+    # ---- Downloads ----
     st.download_button(
         "Download Preview (Markdown)",
         data=(preview_doc or "").encode("utf-8"),
         file_name=f"weekly_preview_{league_id}_{year}_w{week}.md",
         mime="text/markdown",
     )
+
+    # PDF export
+    try:
+        pdf_bytes = _md_to_pdf_bytes(preview_doc, title=f"Weekly Preview – Week {int(week)}")
+        st.download_button(
+            "Download Preview (PDF)",
+            data=pdf_bytes,
+            file_name=f"weekly_preview_{league_id}_{year}_w{week}.pdf",
+            mime="application/pdf",
+        )
+    except Exception as e:
+        st.warning("Couldn't generate a PDF. See details below.")
+        with st.expander("PDF error details"):
+            st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
