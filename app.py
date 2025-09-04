@@ -70,7 +70,7 @@ col1, col2, col3 = st.columns(3)
 with col1:
     league_id = st.number_input("League ID", min_value=1, step=1, format="%d")
 with col2:
-    year = st.number_input("Season (year)", min_value=2015, max_value=2100, value=2025, step=1)
+    year = st.number_input("Season (year)", min_value=2015, max_value=2100, value=2024, step=1)
 with col3:
     week = st.number_input("Week", min_value=1, max_value=18, value=1, step=1)
 
@@ -144,7 +144,7 @@ def _md_to_pdf_bytes(md_text: str, title: str = "Weekly Preview") -> bytes:
     out.seek(0)
     return out.read()
 
-# ---------- Recap “spice” (emojis + light puns without changing recap logic) ----------
+# ---------- Recap “extra spice” (adds emojis & puns; does not change logic) ----------
 def _spice_up_recap(md_text: str, week_val: int) -> str:
     if not md_text:
         return md_text
@@ -154,18 +154,29 @@ def _spice_up_recap(md_text: str, week_val: int) -> str:
     for i, line in enumerate(lines):
         if not inserted_banner and i == 0:
             out.append(f"# 🏈🔥 Weekly Recap — Week {week_val} 🔥🏈")
+            out.append("_Tape don’t lie — but it does rewind. Let’s roll the highlights!_ 🎬✨")
             out.append("")
             inserted_banner = True
-        # add emojis to headings
+        # amp up headings with a little juice
         if line.startswith("#"):
             line = re.sub(r"^(#+\s*)(.*)$", lambda m: f"{m.group(1)}{m.group(2)} 🏈💥", line)
         out.append(line)
+
     text = "\n".join(out)
-    # tasteful sprinkle
-    text = text.replace("MVP", "MVP ⭐")
-    text = text.replace("Upset", "Upset 🚨")
-    text = text.replace("stud", "stud 🌟")
-    text = text.replace("boom", "boom 💣")
+    # Sprinkle some fun keywords -> emojis/puns
+    replacements = {
+        "MVP": "MVP ⭐",
+        "Upset": "Upset 🚨",
+        "stud": "stud 🌟",
+        "boom": "boom 💣",
+        "clutch": "clutch ⏱️",
+        "steamrolled": "steamrolled 🚜",
+        "shootout": "shootout 🔫➡️🏈",
+        "nail-biter": "nail-biter 😬",
+        "gritty": "gritty 🧱",
+    }
+    for k, v in replacements.items():
+        text = re.sub(rf"\b{k}\b", v, text, flags=re.IGNORECASE)
     return text
 
 # -------------------- Main Recap action (generator unchanged) --------------------
@@ -214,7 +225,7 @@ if st.button("Generate Weekly Recap", type="primary", disabled=disabled):
                 st.code("".join(traceback.format_exception(type(e), e, e.__traceback__)))
             st.stop()
 
-    # spice it up (non-destructive)
+    # add emojis & puns (non-destructive post-process)
     recap = _spice_up_recap(recap, int(week))
 
     st.success("Recap generated!")
