@@ -1,17 +1,49 @@
 from typing import List, Dict, Any
+import os
 from espn_api.football import League
+
+def _get_env(name: str) -> str:
+    """
+    Reads from environment variables, or from Streamlit secrets if available.
+    """
+    try:
+        import streamlit as st
+        return os.getenv(name) or st.secrets.get(name, "")
+    except Exception:
+        return os.getenv(name, "")
+
+def _load_league(league_id: int, year: int) -> League:
+    """
+    Load an ESPN fantasy league for the given year with required cookies.
+    """
+    espn_s2 = _get_env("ESPN_S2")
+    swid = _get_env("SWID")
+
+    if not espn_s2 or not swid:
+        raise RuntimeError(
+            "ESPN cookies are required for current-season data.\n"
+            "Set env/secrets ESPN_S2 and SWID. (Copy them from browser DevTools → Cookies.)"
+        )
+
+    if not (swid.startswith("{") and swid.endswith("}")):
+        raise RuntimeError("SWID must include braces, e.g. {ABCD-1234-...}.")
+
+    return League(league_id=league_id, year=year, espn_s2=espn_s2, swid=swid)
 
 def get_week_matchups(league_id: int, year: int, week: int) -> List[Dict[str, Any]]:
     """
     Returns a list of matchup dicts for the given week:
     - matchup: home/away team names, scores, winner, margin
     - home_starters / away_starters: [{name, slot, points}, ...]
-    NOTE: This version does NOT require ESPN_S2 or SWID. It will only work for
-    leagues that are public or otherwise readable without auth.
     """
-    league = League(league_id=league_id, year=year)
+    league = _load_league(league_id, year)
 
-    boxes = league.box_scores(week)
+    # Guard against None or out-of-range weeks
+    current = getattr(league, "current_week", None) or 1
+    reg_weeks = getattr(getattr(league, "settings", None), "reg_season_count", 14) or 14
+    safe_week = min(max(week or current, 1), reg_weeks)
+
+    boxes = league.box_scores(safe_week)
     matchups: List[Dict[str, Any]] = []
 
     def starters(lineup):
@@ -30,7 +62,7 @@ def get_week_matchups(league_id: int, year: int, week: int) -> List[Dict[str, An
         away_score = round(b.away_score or 0, 2)
 
         m = {
-            "week": week,
+            "week": safe_week,
             "matchup": {
                 "home_team": home_name,
                 "home_score": home_score,
